@@ -189,19 +189,20 @@ const bookingSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-bookingSchema.pre('validate', function bookingIntervalPreValidate(next) {
+// Mongoose 8+ may not pass `next` to sync hooks; use async middleware instead of next().
+bookingSchema.pre('validate', async function bookingIntervalPreValidate() {
+  if (!this.eventDetails?.date || !this.eventDetails?.slot) {
+    return;
+  }
   try {
-    if (this.eventDetails?.date && this.eventDetails?.slot) {
-      const { startUtc, endUtc } = getSlotIntervalUtc(this.eventDetails.date, this.eventDetails.slot);
-      if (startUtc && endUtc) {
-        this.eventDetails.startUtc = startUtc;
-        this.eventDetails.endUtc = endUtc;
-      }
+    const { startUtc, endUtc } = getSlotIntervalUtc(this.eventDetails.date, this.eventDetails.slot);
+    if (startUtc && endUtc) {
+      this.eventDetails.startUtc = startUtc;
+      this.eventDetails.endUtc = endUtc;
     }
   } catch (err) {
-    return next(err);
+    throw err;
   }
-  next();
 });
 
 export const Booking = mongoose.model('Booking', bookingSchema);
