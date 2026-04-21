@@ -134,7 +134,7 @@ export const verifyOtpUser = asyncHandler(async (req, res) => {
 
   if (!user) {
     const trimmedName = typeof name === 'string' ? name.trim() : '';
-    requiresName = !trimmedName;
+    requiresName = true;
     user = await User.create({
       phone: normalizedPhone,
       // Create the user after OTP; app can collect and patch a real name in the next step.
