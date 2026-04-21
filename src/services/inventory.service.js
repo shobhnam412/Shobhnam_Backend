@@ -1,7 +1,18 @@
 import { Artist } from '../models/artist.model.js';
 import { Booking } from '../models/booking.model.js';
 import { BookingHold } from '../models/bookingHold.model.js';
-import { BOOKING_SLOT_ENUM, getSlotIntervalUtc, intervalsOverlap, toDateKeyInIST } from '../utils/istTime.js';
+import {
+  ALL_BOOKING_SLOT_ENUM,
+  BOOKING_SLOT_ENUM,
+  getSlotIntervalUtc,
+  intervalsOverlap,
+  istHmIntervalToUtc,
+  istIntervalToUtcExclusiveEnd,
+  legacyAvailabilitySlotToInterval,
+  mergeArtistDayIntervals,
+  normalizeHmToken,
+  toDateKeyInIST,
+} from '../utils/istTime.js';
 import { ApiError } from '../utils/ApiError.js';
 
 export const ACTIVE_BOOKING_STATUSES = ['PENDING', 'CONFIRMED', 'UPCOMING', 'ONGOING', 'MANUAL_REVIEW'];
@@ -82,51 +93,81 @@ export const findConflictingHold = async ({ artistId, startUtc, endUtc, userId }
   }).select('_id user expiresAt');
 };
 
+/**
+ * Union of HM intervals for a date across all calendar rows (all schedules).
+ * Legacy `slots` on a row are converted to HM ranges then merged.
+ */
+const unionHmIntervalsForDateKey = (artist, dateKey) => {
+  const rows = (artist?.availability?.calendarDays || []).filter(
+    (d) => String(d?.dateKey || '').trim() === dateKey
+  );
+  const hmList = [];
+  for (const row of rows) {
+    if (row?.enabled === false) continue;
+    if (Array.isArray(row.intervals)) {
+      for (const iv of row.intervals) {
+        const start = normalizeHmToken(iv?.start);
+        const end =
+          String(iv?.end || '').trim() === '24:00' ? '24:00' : normalizeHmToken(iv?.end);
+        if (start && end) hmList.push({ start, end });
+      }
+    }
+    for (const slot of Array.isArray(row?.slots) ? row.slots : []) {
+      const c = legacyAvailabilitySlotToInterval(String(slot || '').trim());
+      if (!c) continue;
+      hmList.push({
+        start: normalizeHmToken(c.start),
+        end: c.end === '24:00' ? '24:00' : normalizeHmToken(c.end),
+      });
+    }
+  }
+  return mergeArtistDayIntervals(hmList.filter((x) => x.start && x.end));
+};
+
+const unionUtcIntervalsForDateKey = (artist, dateKey) => {
+  const mergedHm = unionHmIntervalsForDateKey(artist, dateKey);
+  const out = [];
+  for (const iv of mergedHm) {
+    if (iv.end === '24:00') {
+      const r = istIntervalToUtcExclusiveEnd(dateKey, { start: iv.start, end: '24:00' });
+      if (r.startUtc && r.endUtc) out.push({ startUtc: r.startUtc, endUtc: r.endUtc });
+    } else {
+      const r = istHmIntervalToUtc(dateKey, iv);
+      if (r.startUtc && r.endUtc) out.push({ startUtc: r.startUtc, endUtc: r.endUtc });
+    }
+  }
+  return out;
+};
+
+/** A 3h product slot is bookable if it has non-empty intersection with the union of artist intervals (plan rule). */
+const slotOverlapsArtistIntervals = (slotStart, slotEnd, utcIntervals) => {
+  if (!slotStart || !slotEnd) return false;
+  return utcIntervals.some(({ startUtc, endUtc }) =>
+    intervalsOverlap(slotStart, slotEnd, startUtc, endUtc)
+  );
+};
+
 export const getArtistAvailabilityConflictMessage = (artist, dateInput, slot) => {
   const availability = artist?.availability || {};
   if (availability.isAvailable === false) {
     return 'Artist is currently unavailable';
   }
+  if (!ALL_BOOKING_SLOT_ENUM.includes(slot)) {
+    return 'Invalid slot';
+  }
 
   const dateKey = toDateKeyInIST(dateInput);
-  const calendarDays = Array.isArray(availability.calendarDays) ? availability.calendarDays : [];
-  const dayOverride = calendarDays.find((d) => String(d?.dateKey || '').trim() === dateKey);
-
-  if (dayOverride) {
-    if (dayOverride.enabled === false) {
-      return `Artist is unavailable on ${dateKey}`;
-    }
-    const slots = Array.isArray(dayOverride.slots) ? dayOverride.slots : [];
-    if (!slots.includes(slot)) {
-      return `Artist is unavailable for slot ${slot} on ${dateKey}`;
-    }
-    return '';
+  const { startUtc, endUtc } = getSlotIntervalUtc(dateInput, slot);
+  if (!startUtc || !endUtc) {
+    return 'Invalid date or slot for availability check';
   }
 
-  const schedules = Array.isArray(availability.schedules) ? availability.schedules : [];
-  if (!schedules.length) return '';
-
-  const selectedId = String(availability.selectedScheduleId || '').trim();
-  const selectedSchedule =
-    schedules.find((scheduleItem) => String(scheduleItem?.id || '') === selectedId) ||
-    schedules.find((scheduleItem) => scheduleItem?.isDefault) ||
-    schedules[0];
-
-  if (!selectedSchedule) return '';
-
-  const dayName = new Date(dateInput).toLocaleDateString('en-IN', {
-    weekday: 'long',
-    timeZone: 'Asia/Kolkata',
-  });
-  const dayEntry = (Array.isArray(selectedSchedule.days) ? selectedSchedule.days : []).find(
-    (day) => day?.day === dayName
-  );
-  if (!dayEntry?.enabled) {
-    return `Artist is unavailable on ${dayName}`;
+  const utcIntervals = unionUtcIntervalsForDateKey(artist, dateKey);
+  if (!utcIntervals.length) {
+    return `Artist is unavailable on ${dateKey}`;
   }
-  const slots = Array.isArray(dayEntry.slots) ? dayEntry.slots : [];
-  if (!slots.includes(slot)) {
-    return `Artist is unavailable for slot ${slot} on ${dayName}`;
+  if (!slotOverlapsArtistIntervals(startUtc, endUtc, utcIntervals)) {
+    return `Artist is unavailable for slot ${slot} on ${dateKey}`;
   }
   return '';
 };
@@ -306,59 +347,37 @@ export const buildArtistCalendarPayload = async ({ artistId, from, to }) => {
   ]);
 
   const availability = artist.availability || {};
-  const calendarDays = Array.isArray(availability.calendarDays) ? availability.calendarDays : [];
-  const schedules = Array.isArray(availability.schedules) ? availability.schedules : [];
-  const selectedId = String(availability.selectedScheduleId || '').trim();
-  const selectedSchedule =
-    schedules.find((s) => String(s?.id || '') === selectedId) ||
-    schedules.find((s) => s?.isDefault) ||
-    schedules[0];
 
   const days = [];
   const cursor = new Date(fromD.getFullYear(), fromD.getMonth(), fromD.getDate());
   const endCursor = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate());
   while (cursor <= endCursor) {
     const key = toDateKeyInIST(cursor);
-    const override = calendarDays.find((d) => String(d?.dateKey || '').trim() === key);
-    let slotsAvailable = [];
-    if (availability.isAvailable === false) {
-      slotsAvailable = [];
-    } else if (override) {
-      if (override.enabled !== false) {
-        slotsAvailable = Array.isArray(override.slots) ? [...override.slots] : [];
-      }
-    } else if (selectedSchedule) {
-      const dayName = cursor.toLocaleDateString('en-IN', { weekday: 'long', timeZone: 'Asia/Kolkata' });
-      const dayEntry = (Array.isArray(selectedSchedule.days) ? selectedSchedule.days : []).find(
-        (d) => d?.day === dayName
-      );
-      if (dayEntry?.enabled) {
-        slotsAvailable = Array.isArray(dayEntry.slots) ? [...dayEntry.slots] : [];
-      }
-    }
+    const utcIntervals =
+      availability.isAvailable === false ? [] : unionUtcIntervalsForDateKey(artist, key);
 
+    const slotsAvailable = [];
     const slotsStatus = {};
     for (const slot of BOOKING_SLOT_ENUM) {
       const { startUtc, endUtc } = getSlotIntervalUtc(`${key}T12:00:00+05:30`, slot);
-      const available = slotsAvailable.includes(slot);
+      const available = slotOverlapsArtistIntervals(startUtc, endUtc, utcIntervals);
+      if (available) slotsAvailable.push(slot);
       let busyReason = null;
       if (!available) {
         busyReason = 'not_in_availability';
       } else {
         const bookingHit = bookings.some((b) => {
-          if (b.eventDetails?.slot !== slot) return false;
           if (toDateKeyInIST(b.eventDetails?.date) !== key) return false;
           let bStart = b.eventDetails?.startUtc ? new Date(b.eventDetails.startUtc) : null;
           let bEnd = b.eventDetails?.endUtc ? new Date(b.eventDetails.endUtc) : null;
           if (!bStart || !bEnd) {
-            const iv = getSlotIntervalUtc(b.eventDetails.date, slot);
+            const iv = getSlotIntervalUtc(b.eventDetails.date, b.eventDetails.slot);
             bStart = iv.startUtc;
             bEnd = iv.endUtc;
           }
           return bStart && bEnd && startUtc && endUtc && intervalsOverlap(startUtc, endUtc, bStart, bEnd);
         });
         const holdHit = holds.some((h) => {
-          if (h.slot !== slot) return false;
           if (toDateKeyInIST(h.startUtc) !== key) return false;
           return startUtc && endUtc && intervalsOverlap(startUtc, endUtc, h.startUtc, h.endUtc);
         });

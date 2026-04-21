@@ -1,6 +1,12 @@
+import mongoose from 'mongoose';
 import { Artist } from '../models/artist.model.js';
 import { buildArtistCalendarPayload } from '../services/inventory.service.js';
 import { ApiError } from '../utils/ApiError.js';
+import {
+  legacyAvailabilitySlotToInterval,
+  mergeArtistDayIntervals,
+  normalizeHmToken,
+} from '../utils/istTime.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
@@ -193,16 +199,6 @@ const isRamleelaExpertise = (value) =>
 const isOtherServicesExpertise = (value) =>
   String(value || '').trim().toLowerCase() === 'other services';
 
-const AVAILABILITY_DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-const AVAILABILITY_SLOT_OPTIONS = ['6AM-12PM', '12PM-6PM', '6PM-12AM', '12AM-6AM'];
-
-const buildEmptyAvailabilityDays = () =>
-  AVAILABILITY_DAY_NAMES.map((day) => ({
-    day,
-    enabled: false,
-    slots: [],
-  }));
-
 const normalizeAvailabilitySchedules = (payloadSchedules = []) => {
   if (!Array.isArray(payloadSchedules)) {
     throw new ApiError(400, 'Availability schedules must be an array');
@@ -219,35 +215,11 @@ const normalizeAvailabilitySchedules = (payloadSchedules = []) => {
     if (idSet.has(scheduleId)) throw new ApiError(400, 'Schedule ids must be unique');
     idSet.add(scheduleId);
 
-    const rawDays = Array.isArray(schedule?.days) ? schedule.days : [];
-    const dayMap = new Map();
-    for (const dayRow of rawDays) {
-      const dayName = String(dayRow?.day || '').trim();
-      if (!AVAILABILITY_DAY_NAMES.includes(dayName)) continue;
-      const enabled = !!dayRow?.enabled;
-      const slots = enabled
-        ? Array.from(
-            new Set(
-              (Array.isArray(dayRow?.slots) ? dayRow.slots : [])
-                .map((slot) => String(slot || '').trim())
-                .filter((slot) => AVAILABILITY_SLOT_OPTIONS.includes(slot))
-            )
-          )
-        : [];
-      dayMap.set(dayName, { day: dayName, enabled, slots });
-    }
-
-    const normalizedDays = AVAILABILITY_DAY_NAMES.map((dayName) => {
-      const existing = dayMap.get(dayName);
-      if (existing) return existing;
-      return { day: dayName, enabled: false, slots: [] };
-    });
-
     return {
       id: scheduleId,
       name: String(schedule?.name || (idx === 0 ? 'Default' : `Schedule ${idx}`)).trim() || `Schedule ${idx}`,
       isDefault: idx === 0 ? true : !!schedule?.isDefault,
-      days: normalizedDays,
+      days: [],
     };
   });
 
@@ -261,33 +233,150 @@ const normalizeAvailabilitySchedules = (payloadSchedules = []) => {
   }));
 };
 
-const normalizeCalendarDays = (rows = []) => {
+const collectIntervalsFromCalendarRow = (row, enabled) => {
+  if (!enabled) return [];
+  const collected = [];
+  if (Array.isArray(row?.intervals)) {
+    for (const iv of row.intervals) {
+      const start = normalizeHmToken(iv?.start);
+      const endToken = String(iv?.end || '').trim() === '24:00' ? '24:00' : normalizeHmToken(iv?.end);
+      if (!start || !endToken) continue;
+      if (endToken !== '24:00' && !normalizeHmToken(endToken)) continue;
+      collected.push({ start, end: endToken });
+    }
+  }
+  if (enabled && !collected.length && Array.isArray(row?.slots)) {
+    for (const slot of row.slots) {
+      const conv = legacyAvailabilitySlotToInterval(String(slot || '').trim());
+      if (!conv) continue;
+      const start = normalizeHmToken(conv.start);
+      const end =
+        conv.end === '24:00' ? '24:00' : normalizeHmToken(conv.end);
+      if (start && end) collected.push({ start, end });
+    }
+  }
+  return mergeArtistDayIntervals(collected);
+};
+
+/**
+ * Calendar rows keyed by (scheduleId|dateKey); merges intervals on collision.
+ * @param {unknown[]} rows
+ * @param {{ allowedServiceAddressIds: Set<string> }} ctx
+ */
+const normalizeCalendarDays = (rows = [], ctx) => {
   if (!Array.isArray(rows)) return [];
-  const seen = new Set();
-  const out = [];
+  const allowed = ctx?.allowedServiceAddressIds ?? new Set();
+  const byKey = new Map();
+
   for (const row of rows) {
     const dateKey = String(row?.dateKey || '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey) || seen.has(dateKey)) continue;
-    seen.add(dateKey);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) continue;
+    const scheduleIdRaw = String(row?.scheduleId || 'default').trim() || 'default';
+    const key = `${scheduleIdRaw}|${dateKey}`;
     const enabled = row?.enabled !== false;
-    const slots = enabled
-      ? Array.from(
-          new Set(
-            (Array.isArray(row?.slots) ? row.slots : [])
-              .map((slot) => String(slot || '').trim())
-              .filter((slot) => AVAILABILITY_SLOT_OPTIONS.includes(slot))
-          )
-        )
-      : [];
-    out.push({
-      dateKey,
-      scheduleId: String(row?.scheduleId || '').trim(),
-      addressId: row?.addressId || undefined,
-      enabled,
-      slots,
-    });
+    const rawAddr =
+      row?.serviceAddressId ?? row?.addressId ?? row?.serviceAddress ?? undefined;
+    let serviceAddressId;
+    if (rawAddr && mongoose.Types.ObjectId.isValid(String(rawAddr)) && allowed.size > 0) {
+      const sid = String(rawAddr);
+      if (allowed.has(sid)) {
+        serviceAddressId = new mongoose.Types.ObjectId(sid);
+      }
+    }
+
+    const intervals = collectIntervalsFromCalendarRow(row, enabled);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, {
+        dateKey,
+        scheduleId: scheduleIdRaw,
+        serviceAddressId,
+        enabled,
+        intervals: [...intervals],
+        slots: [],
+      });
+      continue;
+    }
+    existing.enabled = existing.enabled && enabled;
+    existing.intervals = mergeArtistDayIntervals([...existing.intervals, ...intervals]);
+    if (!existing.serviceAddressId && serviceAddressId) {
+      existing.serviceAddressId = serviceAddressId;
+    }
   }
-  return out;
+
+  return Array.from(byKey.values()).map((item) => ({
+    dateKey: item.dateKey,
+    scheduleId: item.scheduleId,
+    serviceAddressId: item.serviceAddressId,
+    enabled: item.enabled,
+    intervals: item.enabled ? mergeArtistDayIntervals(item.intervals) : [],
+    slots: [],
+  }));
+};
+
+const normalizeServiceAddressesPayload = (payload, existing = []) => {
+  if (!Array.isArray(payload)) {
+    throw new ApiError(400, 'serviceAddresses must be an array');
+  }
+  const existingById = new Map(
+    (Array.isArray(existing) ? existing : []).map((a) => [String(a._id), a])
+  );
+  const usedDefault = { flag: false };
+  return payload.map((row, idx) => {
+    let _id;
+    if (row?._id && mongoose.Types.ObjectId.isValid(String(row._id))) {
+      const sid = String(row._id);
+      if (existingById.has(sid)) {
+        _id = new mongoose.Types.ObjectId(sid);
+      } else {
+        throw new ApiError(400, `Unknown service address id: ${sid}`);
+      }
+    } else {
+      _id = new mongoose.Types.ObjectId();
+    }
+
+    const addressType = String(row?.addressType || 'HOME').trim().toUpperCase();
+    const allowedTypes = ['HOME', 'WORK', 'OTHER', 'TEMPORARY'];
+    if (!allowedTypes.includes(addressType)) {
+      throw new ApiError(400, 'Invalid service address type');
+    }
+    const saveAs = String(row?.saveAs || '').trim();
+    const houseFloor = String(row?.houseFloor || '').trim();
+    const recipientName = String(row?.recipientName || '').trim();
+    const recipientPhone = String(row?.recipientPhone || '').trim();
+    if (!saveAs) throw new ApiError(400, 'Each service address needs saveAs');
+    if (!houseFloor) throw new ApiError(400, 'Each service address needs houseFloor');
+    if (!recipientName) throw new ApiError(400, 'Each service address needs recipientName');
+    if (!recipientPhone) throw new ApiError(400, 'Each service address needs recipientPhone');
+
+    let isDefault = Boolean(row?.isDefault);
+    if (isDefault) {
+      if (usedDefault.flag) isDefault = false;
+      else usedDefault.flag = true;
+    }
+    if (idx === 0 && !usedDefault.flag) {
+      isDefault = true;
+      usedDefault.flag = true;
+    }
+
+    return {
+      _id,
+      addressType,
+      saveAs,
+      houseFloor,
+      towerBlock: String(row?.towerBlock || '').trim(),
+      landmark: String(row?.landmark || '').trim(),
+      recipientName,
+      recipientPhone,
+      mapAddress: String(row?.mapAddress || '').trim(),
+      city: String(row?.city || 'New Delhi').trim() || 'New Delhi',
+      state: String(row?.state || 'Delhi').trim() || 'Delhi',
+      pinCode: String(row?.pinCode || '').trim(),
+      latitude: row?.latitude !== undefined ? Number(row.latitude) : undefined,
+      longitude: row?.longitude !== undefined ? Number(row.longitude) : undefined,
+      isDefault,
+    };
+  });
 };
 
 export const updateArtistProfile = asyncHandler(async (req, res) => {
@@ -313,6 +402,7 @@ export const updateArtistProfile = asyncHandler(async (req, res) => {
     state,
     serviceLocation,
     serviceLocationDetails,
+    serviceAddresses,
     youtubeLink,
     profilePhoto,
     aadharCard,
@@ -443,6 +533,28 @@ export const updateArtistProfile = asyncHandler(async (req, res) => {
     if (currency) updates.$set['pricing.currency'] = currency;
   }
 
+  const needsAvailOrAddresses =
+    availabilityPayloadPresent ||
+    (serviceAddresses !== undefined && role === 'ARTIST');
+  let existingForAvailability = null;
+  if (needsAvailOrAddresses && role === 'ARTIST') {
+    existingForAvailability = await Artist.findById(req.user._id)
+      .select('serviceAddresses availability')
+      .lean();
+  }
+
+  if (serviceAddresses !== undefined && role === 'ARTIST') {
+    const nextAddr = normalizeServiceAddressesPayload(
+      serviceAddresses,
+      existingForAvailability?.serviceAddresses || []
+    );
+    updates.$set.serviceAddresses = nextAddr;
+    existingForAvailability = {
+      ...existingForAvailability,
+      serviceAddresses: nextAddr,
+    };
+  }
+
   if (availabilityPayloadPresent) {
     if (typeof availability !== 'object') {
       throw new ApiError(400, 'Availability must be an object');
@@ -452,19 +564,37 @@ export const updateArtistProfile = asyncHandler(async (req, res) => {
     const selectedScheduleId = nextSchedules.some((scheduleItem) => scheduleItem.id === selectedScheduleIdCandidate)
       ? selectedScheduleIdCandidate
       : 'default';
-    const scheduleForAvailability =
-      nextSchedules.find((scheduleItem) => scheduleItem.id === selectedScheduleId) || nextSchedules[0];
-    const hasAnySlot = (scheduleForAvailability?.days || []).some(
-      (day) => day.enabled && Array.isArray(day.slots) && day.slots.length > 0
+
+    const addrList =
+      updates.$set.serviceAddresses ||
+      existingForAvailability?.serviceAddresses ||
+      [];
+    const allowedServiceAddressIds = new Set(
+      (Array.isArray(addrList) ? addrList : []).map((a) => String(a._id))
     );
+
+    const calendarHasIntervals = (cal) =>
+      Array.isArray(cal) &&
+      cal.some((row) => row.enabled && Array.isArray(row.intervals) && row.intervals.length > 0);
+
+    let hasAnySlot = false;
+    if (availability?.calendarDays !== undefined) {
+      const normalizedCal = normalizeCalendarDays(availability.calendarDays, { allowedServiceAddressIds });
+      updates.$set['availability.calendarDays'] = normalizedCal;
+      hasAnySlot = calendarHasIntervals(normalizedCal);
+    } else {
+      const existingCal = existingForAvailability?.availability?.calendarDays || [];
+      hasAnySlot = existingCal.some((row) => {
+        if (row?.enabled === false) return false;
+        if (Array.isArray(row?.intervals) && row.intervals.length) return true;
+        return Array.isArray(row?.slots) && row.slots.length > 0;
+      });
+    }
 
     updates.$set['availability.schedules'] = nextSchedules;
     updates.$set['availability.selectedScheduleId'] = selectedScheduleId;
     updates.$set['availability.isAvailable'] =
       availability?.isAvailable !== undefined ? !!availability.isAvailable : hasAnySlot;
-    if (availability?.calendarDays !== undefined) {
-      updates.$set['availability.calendarDays'] = normalizeCalendarDays(availability.calendarDays);
-    }
   } else if (isAvailable !== undefined) {
     updates.$set['availability.isAvailable'] = !!isAvailable;
   }

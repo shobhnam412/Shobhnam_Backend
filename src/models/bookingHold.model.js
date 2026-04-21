@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { ALL_BOOKING_SLOT_ENUM } from '../utils/istTime.js';
 
 const bookingHoldSchema = new mongoose.Schema(
   {
@@ -23,7 +24,7 @@ const bookingHoldSchema = new mongoose.Schema(
     dateKey: { type: String, trim: true, index: true },
     slot: {
       type: String,
-      enum: ['6AM-12PM', '12PM-6PM', '6PM-12AM', '12AM-6AM'],
+      enum: ALL_BOOKING_SLOT_ENUM,
       required: true,
     },
     state: {

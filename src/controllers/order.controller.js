@@ -9,9 +9,10 @@ import {
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+import { ALL_BOOKING_SLOT_ENUM } from "../utils/istTime.js";
 
 const TRAVELING_FEE = 500;
-const ALLOWED_SLOTS = new Set(["6AM-12PM", "12PM-6PM", "6PM-12AM", "12AM-6AM"]);
+const ALLOWED_SLOTS = new Set(ALL_BOOKING_SLOT_ENUM);
 
 export const createOrder = asyncHandler(async (req, res) => {
   const { items, paymentPlan = "FULL" } = req.body;

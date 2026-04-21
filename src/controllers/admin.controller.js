@@ -23,7 +23,7 @@ import {
   getArtistAvailabilityConflictMessage,
   buildArtistCalendarPayload,
 } from '../services/inventory.service.js';
-import { getSlotIntervalUtc } from '../utils/istTime.js';
+import { ALL_BOOKING_SLOT_ENUM, BOOKING_SLOT_ENUM, getSlotIntervalUtc } from '../utils/istTime.js';
 
 const BANK_VERIFICATION_STATUS = {
   NOT_SUBMITTED: 'NOT_SUBMITTED',
@@ -868,8 +868,7 @@ const buildOrderItemEventDate = (orderItem) => {
 };
 
 const buildOrderItemSlot = (orderItem) => {
-  const validSlots = ['6AM-12PM', '12PM-6PM', '6PM-12AM', '12AM-6AM'];
-  return validSlots.includes(orderItem?.slot) ? orderItem.slot : '6AM-12PM';
+  return ALL_BOOKING_SLOT_ENUM.includes(orderItem?.slot) ? orderItem.slot : BOOKING_SLOT_ENUM[0];
 };
 
 const buildOrderItemTypeLabel = (orderItem) => {

@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { getSlotIntervalUtc } from '../utils/istTime.js';
+import { ALL_BOOKING_SLOT_ENUM, getSlotIntervalUtc } from '../utils/istTime.js';
 
 const bookingSchema = new mongoose.Schema(
   {
@@ -16,7 +16,7 @@ const bookingSchema = new mongoose.Schema(
     },
     eventDetails: {
       date: { type: Date, required: true },
-      slot: { type: String, enum: ['6AM-12PM', '12PM-6PM', '6PM-12AM', '12AM-6AM'], required: true },
+      slot: { type: String, enum: ALL_BOOKING_SLOT_ENUM, required: true },
       startUtc: { type: Date },
       endUtc: { type: Date },
       type: { type: String, required: true }, // array of strings maybe? e.g. 'Ramleela', 'Sundarkand'

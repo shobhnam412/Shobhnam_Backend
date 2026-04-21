@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { ALL_BOOKING_SLOT_ENUM } from '../utils/istTime.js';
 
 const orderItemSchema = new mongoose.Schema(
   {
@@ -7,7 +8,7 @@ const orderItemSchema = new mongoose.Schema(
     price: { type: Number, required: true },
     dateTime: { type: String },
     date: { type: Date },
-    slot: { type: String, enum: ['6AM-12PM', '12PM-6PM', '6PM-12AM', '12AM-6AM'] },
+    slot: { type: String, enum: ALL_BOOKING_SLOT_ENUM },
     addressId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Address',

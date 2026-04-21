@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { env } from '../config/env.js';
 
 const AVAILABILITY_DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+/** @deprecated Weekly template; stored empty for new saves. */
 const AVAILABILITY_SLOT_OPTIONS = ['6AM-12PM', '12PM-6PM', '6PM-12AM', '12AM-6AM'];
 
 const availabilityDaySchema = new mongoose.Schema(
@@ -50,6 +51,14 @@ const availabilityScheduleSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const availabilityIntervalSchema = new mongoose.Schema(
+  {
+    start: { type: String, trim: true, required: true },
+    end: { type: String, trim: true, required: true },
+  },
+  { _id: false }
+);
+
 const availabilityCalendarDaySchema = new mongoose.Schema(
   {
     dateKey: {
@@ -62,14 +71,23 @@ const availabilityCalendarDaySchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    /** Artist `serviceAddresses` subdocument _id (not User Address collection). */
+    serviceAddressId: {
+      type: mongoose.Schema.Types.ObjectId,
+    },
+    /** @deprecated Use serviceAddressId; kept so legacy documents still load. */
     addressId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Address',
     },
     enabled: {
       type: Boolean,
       default: true,
     },
+    intervals: {
+      type: [availabilityIntervalSchema],
+      default: [],
+    },
+    /** @deprecated Prefer intervals; converted when read if intervals empty. */
     slots: [
       {
         type: String,
@@ -78,6 +96,30 @@ const availabilityCalendarDaySchema = new mongoose.Schema(
     ],
   },
   { _id: false }
+);
+
+const serviceAddressSchema = new mongoose.Schema(
+  {
+    addressType: {
+      type: String,
+      enum: ['HOME', 'WORK', 'OTHER', 'TEMPORARY'],
+      default: 'HOME',
+    },
+    saveAs: { type: String, trim: true, required: true, maxlength: 40 },
+    houseFloor: { type: String, trim: true, required: true, maxlength: 160 },
+    towerBlock: { type: String, trim: true, maxlength: 120 },
+    landmark: { type: String, trim: true, maxlength: 200 },
+    recipientName: { type: String, trim: true, maxlength: 100 },
+    recipientPhone: { type: String, trim: true, maxlength: 20 },
+    mapAddress: { type: String, trim: true },
+    city: { type: String, trim: true, default: 'New Delhi', maxlength: 80 },
+    state: { type: String, trim: true, default: 'Delhi', maxlength: 80 },
+    pinCode: { type: String, trim: true, maxlength: 12 },
+    latitude: { type: Number },
+    longitude: { type: Number },
+    isDefault: { type: Boolean, default: false },
+  },
+  { timestamps: true }
 );
 
 const artistSchema = new mongoose.Schema(
@@ -211,6 +253,11 @@ const artistSchema = new mongoose.Schema(
       latitude: { type: Number },
       longitude: { type: Number },
     },
+    /** Saved service locations for availability + booking context (subdocs with own _id). */
+    serviceAddresses: {
+      type: [serviceAddressSchema],
+      default: [],
+    },
     youtubeLink: {
       type: String,
       trim: true,
@@ -257,11 +304,7 @@ const artistSchema = new mongoose.Schema(
             id: 'default',
             name: 'Default',
             isDefault: true,
-            days: AVAILABILITY_DAY_NAMES.map((day) => ({
-              day,
-              enabled: false,
-              slots: [],
-            })),
+            days: [],
           },
         ],
       },

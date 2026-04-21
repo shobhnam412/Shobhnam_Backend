@@ -68,8 +68,21 @@ const buildOrderItemEventDate = (orderItem) => {
 };
 
 const buildOrderItemSlot = (orderItem) => {
-  const validSlots = ['6AM-12PM', '12PM-6PM', '6PM-12AM', '12AM-6AM'];
-  return validSlots.includes(orderItem?.slot) ? orderItem.slot : '6AM-12PM';
+  const validSlots = [
+    '6AM-9AM',
+    '9AM-12PM',
+    '12PM-3PM',
+    '3PM-6PM',
+    '6PM-9PM',
+    '9PM-12AM',
+    '12AM-3AM',
+    '3AM-6AM',
+    '6AM-12PM',
+    '12PM-6PM',
+    '6PM-12AM',
+    '12AM-6AM',
+  ];
+  return validSlots.includes(orderItem?.slot) ? orderItem.slot : '6AM-9AM';
 };
 
 const buildOrderItemTypeLabel = (orderItem) => {
