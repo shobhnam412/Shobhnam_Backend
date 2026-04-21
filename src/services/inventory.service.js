@@ -1,0 +1,385 @@
+import { Artist } from '../models/artist.model.js';
+import { Booking } from '../models/booking.model.js';
+import { BookingHold } from '../models/bookingHold.model.js';
+import { BOOKING_SLOT_ENUM, getSlotIntervalUtc, intervalsOverlap, toDateKeyInIST } from '../utils/istTime.js';
+import { ApiError } from '../utils/ApiError.js';
+
+export const ACTIVE_BOOKING_STATUSES = ['PENDING', 'CONFIRMED', 'UPCOMING', 'ONGOING', 'MANUAL_REVIEW'];
+
+const DEFAULT_HOLD_MS = 15 * 60 * 1000;
+
+export const getHoldTtlMs = () => {
+  const raw = Number(process.env.BOOKING_HOLD_TTL_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_HOLD_MS;
+};
+
+const artistMatch = (artistId) => ({
+  $or: [{ artist: artistId }, { 'assignedArtists.artist': artistId }],
+});
+
+const buildLegacySameDaySlotClause = (dateKey, slot) => ({
+  $and: [
+    {
+      $or: [
+        { 'eventDetails.startUtc': { $exists: false } },
+        { 'eventDetails.endUtc': { $exists: false } },
+        { 'eventDetails.startUtc': null },
+        { 'eventDetails.endUtc': null },
+      ],
+    },
+    { 'eventDetails.slot': slot },
+    {
+      $expr: {
+        $eq: [
+          {
+            $dateToString: {
+              format: '%Y-%m-%d',
+              date: '$eventDetails.date',
+              timezone: 'Asia/Kolkata',
+            },
+          },
+          dateKey,
+        ],
+      },
+    },
+  ],
+});
+
+const buildIntervalOverlapClause = (startUtc, endUtc) => ({
+  $and: [
+    { 'eventDetails.startUtc': { $exists: true, $ne: null } },
+    { 'eventDetails.endUtc': { $exists: true, $ne: null } },
+    { 'eventDetails.startUtc': { $lt: endUtc } },
+    { 'eventDetails.endUtc': { $gt: startUtc } },
+  ],
+});
+
+export const findConflictingBooking = async ({ artistId, startUtc, endUtc, slot, dateKey, excludeBookingId }) => {
+  const query = {
+    status: { $in: ACTIVE_BOOKING_STATUSES },
+    $and: [
+      artistMatch(artistId),
+      {
+        $or: [buildIntervalOverlapClause(startUtc, endUtc), buildLegacySameDaySlotClause(dateKey, slot)],
+      },
+    ],
+  };
+  if (excludeBookingId) {
+    query._id = { $ne: excludeBookingId };
+  }
+  return Booking.findOne(query).select('_id eventDetails status');
+};
+
+export const findConflictingHold = async ({ artistId, startUtc, endUtc, userId }) => {
+  const now = new Date();
+  return BookingHold.findOne({
+    artist: artistId,
+    state: 'ACTIVE',
+    expiresAt: { $gt: now },
+    user: { $ne: userId },
+    startUtc: { $lt: endUtc },
+    endUtc: { $gt: startUtc },
+  }).select('_id user expiresAt');
+};
+
+export const getArtistAvailabilityConflictMessage = (artist, dateInput, slot) => {
+  const availability = artist?.availability || {};
+  if (availability.isAvailable === false) {
+    return 'Artist is currently unavailable';
+  }
+
+  const dateKey = toDateKeyInIST(dateInput);
+  const calendarDays = Array.isArray(availability.calendarDays) ? availability.calendarDays : [];
+  const dayOverride = calendarDays.find((d) => String(d?.dateKey || '').trim() === dateKey);
+
+  if (dayOverride) {
+    if (dayOverride.enabled === false) {
+      return `Artist is unavailable on ${dateKey}`;
+    }
+    const slots = Array.isArray(dayOverride.slots) ? dayOverride.slots : [];
+    if (!slots.includes(slot)) {
+      return `Artist is unavailable for slot ${slot} on ${dateKey}`;
+    }
+    return '';
+  }
+
+  const schedules = Array.isArray(availability.schedules) ? availability.schedules : [];
+  if (!schedules.length) return '';
+
+  const selectedId = String(availability.selectedScheduleId || '').trim();
+  const selectedSchedule =
+    schedules.find((scheduleItem) => String(scheduleItem?.id || '') === selectedId) ||
+    schedules.find((scheduleItem) => scheduleItem?.isDefault) ||
+    schedules[0];
+
+  if (!selectedSchedule) return '';
+
+  const dayName = new Date(dateInput).toLocaleDateString('en-IN', {
+    weekday: 'long',
+    timeZone: 'Asia/Kolkata',
+  });
+  const dayEntry = (Array.isArray(selectedSchedule.days) ? selectedSchedule.days : []).find(
+    (day) => day?.day === dayName
+  );
+  if (!dayEntry?.enabled) {
+    return `Artist is unavailable on ${dayName}`;
+  }
+  const slots = Array.isArray(dayEntry.slots) ? dayEntry.slots : [];
+  if (!slots.includes(slot)) {
+    return `Artist is unavailable for slot ${slot} on ${dayName}`;
+  }
+  return '';
+};
+
+export const assertInventoryAvailable = async ({
+  artistId,
+  dateInput,
+  slot,
+  userId,
+  excludeBookingId,
+  ignoreHoldsForUserId,
+}) => {
+  const { startUtc, endUtc, dateKey } = getSlotIntervalUtc(dateInput, slot);
+  if (!startUtc || !endUtc || !dateKey) {
+    throw new ApiError(400, 'Invalid date or slot for availability check');
+  }
+
+  const bookingHit = await findConflictingBooking({
+    artistId,
+    startUtc,
+    endUtc,
+    slot,
+    dateKey,
+    excludeBookingId,
+  });
+  if (bookingHit) {
+    throw new ApiError(409, 'Artist already has another booking for this date and slot');
+  }
+
+  const holdUserId = ignoreHoldsForUserId ?? userId;
+  const holdHit = await findConflictingHold({
+    artistId,
+    startUtc,
+    endUtc,
+    userId: holdUserId,
+  });
+  if (holdHit) {
+    throw new ApiError(409, 'This time was just reserved by another user. Pick another slot.');
+  }
+
+  return { startUtc, endUtc, dateKey };
+};
+
+export const createActiveHold = async ({ userId, artistId, dateInput, slot, addressId }) => {
+  const artist = await Artist.findById(artistId);
+  if (!artist) throw new ApiError(404, 'Artist not found');
+  if (artist.status !== 'APPROVED') {
+    throw new ApiError(400, 'Artist is not available for booking');
+  }
+
+  const msg = getArtistAvailabilityConflictMessage(artist, dateInput, slot);
+  if (msg) throw new ApiError(409, msg);
+
+  const { startUtc, endUtc, dateKey } = getSlotIntervalUtc(dateInput, slot);
+  if (!startUtc || !endUtc) throw new ApiError(400, 'Invalid date or slot');
+
+  await BookingHold.updateMany(
+    {
+      user: userId,
+      artist: artistId,
+      state: 'ACTIVE',
+      startUtc: { $lt: endUtc },
+      endUtc: { $gt: startUtc },
+    },
+    { $set: { state: 'RELEASED' } }
+  );
+
+  await assertInventoryAvailable({
+    artistId,
+    dateInput,
+    slot,
+    userId,
+    excludeBookingId: null,
+    ignoreHoldsForUserId: null,
+  });
+
+  const expiresAt = new Date(Date.now() + getHoldTtlMs());
+  const hold = await BookingHold.create({
+    user: userId,
+    artist: artistId,
+    addressId: addressId || undefined,
+    startUtc,
+    endUtc,
+    dateKey,
+    slot,
+    state: 'ACTIVE',
+    expiresAt,
+  });
+
+  return hold;
+};
+
+export const releaseHoldById = async (holdId, userId) => {
+  const hold = await BookingHold.findOne({ _id: holdId, user: userId, state: 'ACTIVE' });
+  if (!hold) return null;
+  hold.state = 'RELEASED';
+  await hold.save();
+  return hold;
+};
+
+export const consumeHoldIfPresent = async ({ holdId, userId, artistId, dateInput, slot }) => {
+  if (!holdId) {
+    throw new ApiError(400, 'holdId is required to complete booking');
+  }
+
+  const now = new Date();
+  const hold = await BookingHold.findOne({
+    _id: holdId,
+    user: userId,
+    artist: artistId,
+    state: 'ACTIVE',
+    expiresAt: { $gt: now },
+  });
+
+  if (!hold) {
+    throw new ApiError(409, 'Your slot reservation expired. Go back and select the time again.');
+  }
+
+  const { startUtc, endUtc } = getSlotIntervalUtc(dateInput, slot);
+  if (
+    !startUtc ||
+    !endUtc ||
+    hold.slot !== slot ||
+    !intervalsOverlap(hold.startUtc, hold.endUtc, startUtc, endUtc)
+  ) {
+    throw new ApiError(400, 'holdId does not match the selected date and slot');
+  }
+
+  hold.state = 'CONSUMED';
+  await hold.save();
+  return hold;
+};
+
+/**
+ * Per-day slot map for green/red UI (availability vs occupancy).
+ */
+export const buildArtistCalendarPayload = async ({ artistId, from, to }) => {
+  const artist = await Artist.findById(artistId).select('availability name category');
+  if (!artist) throw new ApiError(404, 'Artist not found');
+
+  const fromD = new Date(from);
+  const toD = new Date(to);
+  if (Number.isNaN(fromD.getTime()) || Number.isNaN(toD.getTime())) {
+    throw new ApiError(400, 'Invalid from/to range');
+  }
+
+  const rangePadStart = new Date(fromD.getFullYear(), fromD.getMonth(), fromD.getDate(), 0, 0, 0, 0);
+  const rangePadEnd = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate(), 23, 59, 59, 999);
+
+  const [bookings, holds] = await Promise.all([
+    Booking.find({
+      status: { $in: ACTIVE_BOOKING_STATUSES },
+      $and: [
+        artistMatch(artistId),
+        {
+          $or: [
+            { 'eventDetails.date': { $gte: rangePadStart, $lte: rangePadEnd } },
+            {
+              'eventDetails.startUtc': { $lte: rangePadEnd },
+              'eventDetails.endUtc': { $gte: rangePadStart },
+            },
+          ],
+        },
+      ],
+    })
+      .select('eventDetails status paymentStatus inventoryCommitted')
+      .lean(),
+    BookingHold.find({
+      artist: artistId,
+      state: 'ACTIVE',
+      expiresAt: { $gt: new Date() },
+      startUtc: { $lt: rangePadEnd },
+      endUtc: { $gt: rangePadStart },
+    })
+      .select('startUtc endUtc slot expiresAt')
+      .lean(),
+  ]);
+
+  const availability = artist.availability || {};
+  const calendarDays = Array.isArray(availability.calendarDays) ? availability.calendarDays : [];
+  const schedules = Array.isArray(availability.schedules) ? availability.schedules : [];
+  const selectedId = String(availability.selectedScheduleId || '').trim();
+  const selectedSchedule =
+    schedules.find((s) => String(s?.id || '') === selectedId) ||
+    schedules.find((s) => s?.isDefault) ||
+    schedules[0];
+
+  const days = [];
+  const cursor = new Date(fromD.getFullYear(), fromD.getMonth(), fromD.getDate());
+  const endCursor = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate());
+  while (cursor <= endCursor) {
+    const key = toDateKeyInIST(cursor);
+    const override = calendarDays.find((d) => String(d?.dateKey || '').trim() === key);
+    let slotsAvailable = [];
+    if (availability.isAvailable === false) {
+      slotsAvailable = [];
+    } else if (override) {
+      if (override.enabled !== false) {
+        slotsAvailable = Array.isArray(override.slots) ? [...override.slots] : [];
+      }
+    } else if (selectedSchedule) {
+      const dayName = cursor.toLocaleDateString('en-IN', { weekday: 'long', timeZone: 'Asia/Kolkata' });
+      const dayEntry = (Array.isArray(selectedSchedule.days) ? selectedSchedule.days : []).find(
+        (d) => d?.day === dayName
+      );
+      if (dayEntry?.enabled) {
+        slotsAvailable = Array.isArray(dayEntry.slots) ? [...dayEntry.slots] : [];
+      }
+    }
+
+    const slotsStatus = {};
+    for (const slot of BOOKING_SLOT_ENUM) {
+      const { startUtc, endUtc } = getSlotIntervalUtc(`${key}T12:00:00+05:30`, slot);
+      const available = slotsAvailable.includes(slot);
+      let busyReason = null;
+      if (!available) {
+        busyReason = 'not_in_availability';
+      } else {
+        const bookingHit = bookings.some((b) => {
+          if (b.eventDetails?.slot !== slot) return false;
+          if (toDateKeyInIST(b.eventDetails?.date) !== key) return false;
+          let bStart = b.eventDetails?.startUtc ? new Date(b.eventDetails.startUtc) : null;
+          let bEnd = b.eventDetails?.endUtc ? new Date(b.eventDetails.endUtc) : null;
+          if (!bStart || !bEnd) {
+            const iv = getSlotIntervalUtc(b.eventDetails.date, slot);
+            bStart = iv.startUtc;
+            bEnd = iv.endUtc;
+          }
+          return bStart && bEnd && startUtc && endUtc && intervalsOverlap(startUtc, endUtc, bStart, bEnd);
+        });
+        const holdHit = holds.some((h) => {
+          if (h.slot !== slot) return false;
+          if (toDateKeyInIST(h.startUtc) !== key) return false;
+          return startUtc && endUtc && intervalsOverlap(startUtc, endUtc, h.startUtc, h.endUtc);
+        });
+        if (bookingHit) busyReason = 'booked';
+        else if (holdHit) busyReason = 'held';
+      }
+      slotsStatus[slot] = {
+        state: !available ? 'unavailable' : busyReason ? 'busy' : 'free',
+        reason: busyReason,
+      };
+    }
+
+    days.push({ dateKey: key, slotsAvailable, slotsStatus });
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return {
+    artistId: String(artistId),
+    from: fromD.toISOString(),
+    to: toD.toISOString(),
+    isAvailable: availability.isAvailable !== false,
+    days,
+  };
+};

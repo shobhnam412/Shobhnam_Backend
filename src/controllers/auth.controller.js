@@ -1,0 +1,316 @@
+import { env } from '../config/env.js';
+import { Artist } from '../models/artist.model.js';
+import { OTP } from '../models/otp.model.js';
+import { User } from '../models/user.model.js';
+import { sendSMS } from '../services/twilio.service.js';
+import { ApiError } from '../utils/ApiError.js';
+import { ApiResponse } from '../utils/ApiResponse.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
+
+// Demo numbers for development: accept OTP 123456 without prior sendOtp
+const TEST_PHONES = new Set([
+  '+918546031266',
+  '+918303438175',
+  '+919369299589',
+  '+919876543210',
+]);
+const TEST_OTP = '123456';
+
+// Normalize phone to E.164 for Indian numbers (Twilio needs +91XXXXXXXXXX)
+const normalizePhone = (phone) => {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 10) return phone;
+  if (phone.startsWith('+')) return phone;
+  return `+91${digits.slice(-10)}`;
+};
+
+const buildPhoneLookupQuery = (phone) => {
+  const normalizedPhone = normalizePhone(phone);
+  const digits = String(phone || '').replace(/\D/g, '');
+  const lastTenDigits = digits.slice(-10);
+  const variants = [phone, normalizedPhone, lastTenDigits, `+91${lastTenDigits}`]
+    .filter(Boolean)
+    .map((value) => String(value).trim())
+    .filter(Boolean);
+
+  return { phone: { $in: [...new Set(variants)] } };
+};
+
+// Helper to generate cookies
+const generateAccessAndRefreshTokens = async (type, userId) => {
+  let user;
+  if (type === 'USER') {
+    user = await User.findById(userId);
+  } else if (type === 'ARTIST') {
+    user = await Artist.findById(userId);
+  }
+
+  const accessToken = user.generateAccessToken();
+  const refreshToken = user.generateRefreshToken();
+
+  user.refreshToken = refreshToken;
+  await user.save({ validateBeforeSave: false });
+
+  return { accessToken, refreshToken };
+};
+
+export const sendOtp = asyncHandler(async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) throw new ApiError(400, 'Phone number is required');
+
+  const normalizedPhone = normalizePhone(phone);
+
+  // Demo numbers: use fixed OTP, skip SMS send
+  const isTestNumber = TEST_PHONES.has(normalizedPhone);
+  const otpCode = isTestNumber ? TEST_OTP : Math.floor(100000 + Math.random() * 900000).toString();
+
+  // Save OTP in Database
+  await OTP.create({
+    phone: normalizedPhone,
+    otp: otpCode,
+    expiresAt: new Date(Date.now() + 5 * 60000), // 5 mins
+  });
+
+  // Send OTP via Twilio SMS (skip for test number)
+  if (isTestNumber) {
+    console.log(`[TEST MODE] OTP for ${normalizedPhone}: ${otpCode} (no SMS sent)`);
+  } else {
+    try {
+      await sendSMS(normalizedPhone, `Your Shobhnam OTP is ${otpCode}. It will expire in 5 minutes.`);
+    } catch (error) {
+      const msg = String(error?.message || '');
+      const isProviderConfigError =
+        /account sid/i.test(msg) ||
+        /auth token/i.test(msg) ||
+        /from/i.test(msg) ||
+        /twilio/i.test(msg) ||
+        /credential/i.test(msg);
+
+      // In development, do not block OTP flow due to provider setup issues.
+      if (env.NODE_ENV !== 'production' && isProviderConfigError) {
+        console.warn(`[DEV FALLBACK] Twilio SMS send failed for ${normalizedPhone}: ${msg}`);
+        console.log(`[DEV FALLBACK OTP] ${normalizedPhone}: ${otpCode}`);
+      } else {
+        throw new ApiError(
+          502,
+          isProviderConfigError
+            ? 'OTP provider is not configured correctly. Please contact support.'
+            : 'Failed to send OTP. Please try again.'
+        );
+      }
+    }
+  }
+
+  return res.status(200).json(
+    new ApiResponse(200, null, 'OTP sent successfully')
+  );
+});
+
+export const verifyOtpUser = asyncHandler(async (req, res) => {
+  const { phone, otp, name, city } = req.body;
+  
+  if (!phone || !otp) throw new ApiError(400, 'Phone and OTP are required');
+
+  const normalizedPhone = normalizePhone(phone);
+
+  // Demo numbers: accept 123456 without DB lookup
+  const isTestNumber = TEST_PHONES.has(normalizedPhone) && otp === TEST_OTP;
+  if (!isTestNumber) {
+    const record = await OTP.findOne({
+      phone: normalizedPhone,
+      otp,
+      isUsed: false,
+      expiresAt: { $gt: new Date() },
+    });
+    if (!record) throw new ApiError(400, 'Invalid or Expired OTP');
+    record.isUsed = true;
+    await record.save();
+  }
+
+  // Check if User exists by normalized phone variants
+  let user = await User.findOne(buildPhoneLookupQuery(normalizedPhone));
+  const isExistingUser = !!user;
+  let requiresName = false;
+
+  if (!user) {
+    const trimmedName = typeof name === 'string' ? name.trim() : '';
+    requiresName = !trimmedName;
+    user = await User.create({
+      phone: normalizedPhone,
+      // Create the user after OTP; app can collect and patch a real name in the next step.
+      name: trimmedName || `User ${normalizedPhone.slice(-4)}`,
+      city,
+      role: 'USER',
+    });
+  }
+
+  const { accessToken, refreshToken } = await generateAccessAndRefreshTokens('USER', user._id);
+
+  const options = { httpOnly: true, secure: true };
+
+  return res
+    .status(200)
+    .cookie('accessToken', accessToken, options)
+    .cookie('refreshToken', refreshToken, options)
+    .json(
+      new ApiResponse(
+        200,
+        { user, accessToken, refreshToken, isExistingUser, requiresName },
+        'User logged in successfully'
+      )
+    );
+});
+
+export const verifyOtpArtist = asyncHandler(async (req, res) => {
+  const { phone, otp, name, category, city } = req.body;
+  
+  if (!phone || !otp) throw new ApiError(400, 'Phone and OTP are required');
+
+  const normalizedPhone = normalizePhone(phone);
+
+  // Demo numbers: accept 123456 without DB lookup
+  const isTestNumber = TEST_PHONES.has(normalizedPhone) && otp === TEST_OTP;
+  if (!isTestNumber) {
+    const record = await OTP.findOne({
+      phone: normalizedPhone,
+      otp,
+      isUsed: false,
+      expiresAt: { $gt: new Date() },
+    });
+    if (!record) throw new ApiError(400, 'Invalid or Expired OTP');
+    record.isUsed = true;
+    await record.save();
+  }
+
+  // Check if Artist exists by normalized phone variants
+  let artist = await Artist.findOne(buildPhoneLookupQuery(normalizedPhone));
+  const isExistingArtist = !!artist;
+
+  if (!artist) {
+    artist = await Artist.create({
+      phone: normalizedPhone,
+      name: name || undefined,
+      status: 'PENDING',
+      onboardingProgress: {
+        applied: false,
+        accountSetup: false,
+        verified: false,
+        allDone: false,
+        lastUpdatedAt: new Date(),
+      },
+      bankVerification: {
+        status: 'NOT_SUBMITTED',
+      },
+      activationChargeStatus: 'PENDING',
+      isLive: false,
+      location: {},
+    });
+  }
+
+  const { accessToken, refreshToken } = await generateAccessAndRefreshTokens('ARTIST', artist._id);
+
+  const options = { httpOnly: true, secure: true };
+
+  return res
+    .status(200)
+    .cookie('accessToken', accessToken, options)
+    .cookie('refreshToken', refreshToken, options)
+    .json(
+      new ApiResponse(
+        200,
+        {
+          artist,
+          accessToken,
+          refreshToken,
+          isExistingArtist,
+          requiresArtistForm: !isExistingArtist,
+        },
+        'Artist logged in successfully'
+      )
+    );
+});
+
+export const hasDualProfile = asyncHandler(async (req, res) => {
+  const current = req.user;
+  if (!current) throw new ApiError(401, 'Unauthorized');
+
+  const phone = current.phone;
+  if (!phone) throw new ApiError(400, 'Phone not found');
+
+  const phoneQuery = buildPhoneLookupQuery(phone);
+  const [userExists, artistExists] = await Promise.all([
+    User.findOne(phoneQuery).select('_id'),
+    Artist.findOne(phoneQuery).select('_id'),
+  ]);
+
+  const hasDualProfileResult = !!(userExists && artistExists);
+
+  return res.status(200).json(
+    new ApiResponse(200, { hasDualProfile: hasDualProfileResult }, 'Dual profile check completed')
+  );
+});
+
+export const switchProfile = asyncHandler(async (req, res) => {
+  const current = req.user;
+  if (!current) throw new ApiError(401, 'Unauthorized');
+
+  const phone = current.phone;
+  if (!phone) throw new ApiError(400, 'Phone not found');
+  const phoneQuery = buildPhoneLookupQuery(phone);
+
+  if (current.role === 'ARTIST') {
+    const user = await User.findOne(phoneQuery);
+    if (!user) throw new ApiError(400, 'No user profile found for this phone number');
+    const { accessToken, refreshToken } = await generateAccessAndRefreshTokens('USER', user._id);
+    const options = { httpOnly: true, secure: true };
+    return res
+      .status(200)
+      .cookie('accessToken', accessToken, options)
+      .cookie('refreshToken', refreshToken, options)
+      .json(new ApiResponse(200, { user, accessToken, refreshToken }, 'Switched to user profile'));
+  }
+
+  if (current.role === 'USER' || current.role === 'ADMIN') {
+    const artist = await Artist.findOne(phoneQuery);
+    if (!artist) throw new ApiError(400, 'No artist profile found for this phone number');
+    const { accessToken, refreshToken } = await generateAccessAndRefreshTokens('ARTIST', artist._id);
+    const options = { httpOnly: true, secure: true };
+    return res
+      .status(200)
+      .cookie('accessToken', accessToken, options)
+      .cookie('refreshToken', refreshToken, options)
+      .json(new ApiResponse(200, { artist, accessToken, refreshToken }, 'Switched to artist profile'));
+  }
+
+  throw new ApiError(400, 'Cannot switch profile');
+});
+
+export const adminLogin = asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) throw new ApiError(400, 'Email and password are required');
+
+  const admin = await User.findOne({ email: email.toLowerCase(), role: 'ADMIN' }).select('+password');
+
+  if (!admin) {
+    throw new ApiError(401, 'Invalid credentials');
+  }
+
+  const isPasswordValid = await admin.isPasswordCorrect(password);
+  if (!isPasswordValid) {
+    throw new ApiError(401, 'Invalid credentials');
+  }
+
+  const token = admin.generateAccessToken();
+
+  const adminData = {
+    _id: admin._id,
+    name: admin.name,
+    email: admin.email,
+    role: admin.role,
+  };
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, { token, admin: adminData }, 'Admin logged in successfully'));
+});
