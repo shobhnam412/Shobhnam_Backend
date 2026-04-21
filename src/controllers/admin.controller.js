@@ -13,6 +13,7 @@ import {
   normalizePaymentPlanForEventDate,
   normalizePaymentPlanForOrderItems,
 } from '../utils/bookingLifecycle.js';
+import mongoose from 'mongoose';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -890,6 +891,70 @@ export const getArtistCalendarForAdmin = asyncHandler(async (req, res) => {
   }
   const payload = await buildArtistCalendarPayload({ artistId: id, from, to });
   res.status(200).json(new ApiResponse(200, payload, 'Artist calendar loaded'));
+});
+
+/**
+ * Approved artists free for a single event date + slot (same rules as assign-artist).
+ * Query: date (ISO), slot, excludeBookingId (optional — excludes that booking from overlap checks).
+ */
+export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
+  const { date, slot, excludeBookingId } = req.query;
+  if (!date || !slot) {
+    throw new ApiError(400, 'Query params date and slot are required');
+  }
+  const dateObj = new Date(String(date));
+  if (Number.isNaN(dateObj.getTime())) {
+    throw new ApiError(400, 'Invalid date');
+  }
+
+  const excludeId =
+    excludeBookingId && mongoose.isValidObjectId(String(excludeBookingId))
+      ? new mongoose.Types.ObjectId(String(excludeBookingId))
+      : undefined;
+
+  const artists = await Artist.find({ status: 'APPROVED' })
+    .select('name phone email category location availability')
+    .lean();
+
+  const checks = await Promise.all(
+    artists.map(async (artist) => {
+      const availabilityMsg = getArtistAvailabilityConflictMessage(artist, dateObj, String(slot));
+      if (availabilityMsg) {
+        return null;
+      }
+      const conflict = await findArtistBookingConflict({
+        artistId: artist._id,
+        date: dateObj,
+        slot: String(slot),
+        excludeBookingId: excludeId,
+      });
+      if (conflict) {
+        return null;
+      }
+      return {
+        _id: artist._id,
+        name: artist.name,
+        phone: artist.phone,
+        email: artist.email,
+        category: artist.category,
+        location: artist.location,
+      };
+    }),
+  );
+
+  const available = checks.filter(Boolean);
+
+  res.status(200).json(
+    new ApiResponse(
+      200,
+      {
+        artists: available,
+        date: dateObj.toISOString(),
+        slot: String(slot),
+      },
+      'Artists available for slot',
+    ),
+  );
 });
 
 const syncLinkedBookingForOrderItem = async (order, itemIndex, assignedArtists) => {

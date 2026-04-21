@@ -32,6 +32,7 @@ import {
   getCategoriesForAdmin,
   getDashboardStats,
   getArtistCalendarForAdmin,
+  listArtistsAvailableForSlot,
   getOrderById,
   reviewArtistBankVerification,
   toggleCategory,
@@ -82,6 +83,10 @@ router.get('/users', getAllUsers);
 router.delete('/users/:id', banUser);
 
 router.get('/artists/applications', getArtistApplications);
+/** Must be before GET /artists so it is not shadowed by list handlers on some Express setups. */
+router.get('/artists/available-for-slot', listArtistsAvailableForSlot);
+/** Stable alias (single segment) — use this from clients to avoid 404s if older builds lack the /artists/... path. */
+router.get('/available-artists-for-slot', listArtistsAvailableForSlot);
 router.get('/artists', getAllArtists);
 router.get('/artists/:id/calendar', getArtistCalendarForAdmin);
 router.get('/artists/bank-verifications', getBankVerificationArtists);
