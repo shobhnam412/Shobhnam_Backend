@@ -258,7 +258,13 @@ export const completeBooking = asyncHandler(async (req, res) => {
 });
 
 export const getUserBookings = asyncHandler(async (req, res) => {
-  const docs = await Booking.find({ user: req.user._id })
+  const { includeOrderLinked = 'false' } = req.query;
+  const query = {
+    user: req.user._id,
+    ...(String(includeOrderLinked).toLowerCase() === 'true' ? {} : { sourceType: 'DIRECT_BOOKING' }),
+  };
+
+  const docs = await Booking.find(query)
     .populate('artist', 'name category profilePhoto pricing')
     .sort({ createdAt: -1 });
 
@@ -267,7 +273,9 @@ export const getUserBookings = asyncHandler(async (req, res) => {
 });
 
 export const getArtistBookings = asyncHandler(async (req, res) => {
+  const { includeOrderLinked = 'false' } = req.query;
   const docs = await Booking.find({
+    ...(String(includeOrderLinked).toLowerCase() === 'true' ? {} : { sourceType: 'DIRECT_BOOKING' }),
     $or: [
       { artist: req.user._id },
       { 'assignedArtists.artist': req.user._id },

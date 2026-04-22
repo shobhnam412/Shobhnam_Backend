@@ -100,13 +100,13 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
       Artist.countDocuments({ 'bankVerification.status': BANK_VERIFICATION_STATUS.PENDING }),
       BookingPaymentVerification.countDocuments({ status: MANUAL_PAYMENT_STATUS.PENDING }),
       ActivationPaymentVerification.countDocuments({ status: MANUAL_PAYMENT_STATUS.PENDING }),
-      Booking.countDocuments(),
+      Booking.countDocuments({ sourceType: 'DIRECT_BOOKING' }),
       Order.countDocuments(),
       Payment.aggregate([
         { $match: { status: 'SUCCESS' } },
         { $group: { _id: null, totalRevenue: { $sum: '$amount' } } },
       ]),
-      Booking.find()
+      Booking.find({ sourceType: 'DIRECT_BOOKING' })
         .sort({ createdAt: -1 })
         .limit(5)
         .populate('user', 'name phone')
@@ -115,10 +115,14 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
         .sort({ createdAt: -1 })
         .limit(5)
         .populate('user', 'name phone'),
-      Booking.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
+      Booking.aggregate([
+        { $match: { sourceType: 'DIRECT_BOOKING' } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
       Booking.aggregate([
         {
           $match: {
+            sourceType: 'DIRECT_BOOKING',
             createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
           },
         },
