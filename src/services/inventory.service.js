@@ -223,6 +223,9 @@ export const createActiveHold = async ({ userId, artistId, dateInput, slot, addr
 
   const { startUtc, endUtc, dateKey } = getSlotIntervalUtc(dateInput, slot);
   if (!startUtc || !endUtc) throw new ApiError(400, 'Invalid date or slot');
+  if (startUtc.getTime() < Date.now()) {
+    throw new ApiError(400, 'Past date or slot cannot be booked. Please choose an upcoming slot.');
+  }
 
   await BookingHold.updateMany(
     {
