@@ -1,3 +1,5 @@
+import { toDateKeyInIST } from './istTime.js';
+
 export const ACTIVATION_CHARGE_AMOUNT = 51;
 
 export const PAYMENT_PLAN = {
@@ -45,20 +47,22 @@ export const getTimeToEventMs = (eventDate, nowMs = Date.now()) => {
   return eventMs - nowMs;
 };
 
-const toStartOfLocalDay = (dateInput) => {
-  const date = new Date(dateInput);
-  if (Number.isNaN(date.getTime())) return null;
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+const addDaysToDateKey = (dateKey, days) => {
+  const [year, month, day] = String(dateKey || '')
+    .split('-')
+    .map((value) => Number(value));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return '';
+  const utcNoon = Date.UTC(year, month - 1, day, 12, 0, 0) + days * 24 * 60 * 60 * 1000;
+  return toDateKeyInIST(new Date(utcNoon));
 };
 
 export const requiresFullPaymentByEventDate = (eventDate, nowMs = Date.now()) => {
-  const eventDay = toStartOfLocalDay(eventDate);
-  if (!eventDay) return false;
-  const today = toStartOfLocalDay(nowMs);
-  if (!today) return false;
-  const cutoffDay = new Date(today);
-  cutoffDay.setDate(cutoffDay.getDate() + 3);
-  return eventDay.getTime() <= cutoffDay.getTime();
+  const eventDateKey = toDateKeyInIST(eventDate);
+  const todayKey = toDateKeyInIST(nowMs);
+  if (!eventDateKey || !todayKey) return false;
+  const cutoffKey = addDaysToDateKey(todayKey, 3);
+  if (!cutoffKey) return false;
+  return eventDateKey <= cutoffKey;
 };
 
 export const normalizePaymentPlanForEventDate = (paymentPlan, eventDate, nowMs = Date.now()) => {
