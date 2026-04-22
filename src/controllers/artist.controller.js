@@ -315,6 +315,7 @@ const normalizeCalendarDays = (rows = [], ctx) => {
 };
 
 const normalizeServiceAddressesPayload = (payload, existing = []) => {
+  const PINCODE_REGEX = /^\d{6}$/;
   if (!Array.isArray(payload)) {
     throw new ApiError(400, 'serviceAddresses must be an array');
   }
@@ -346,8 +347,15 @@ const normalizeServiceAddressesPayload = (payload, existing = []) => {
     const recipientPhone = String(row?.recipientPhone || '').trim();
     if (!saveAs) throw new ApiError(400, 'Each service address needs saveAs');
     if (!houseFloor) throw new ApiError(400, 'Each service address needs houseFloor');
+    if (!String(row?.towerBlock || '').trim()) throw new ApiError(400, 'Each service address needs towerBlock');
     if (!recipientName) throw new ApiError(400, 'Each service address needs recipientName');
     if (!recipientPhone) throw new ApiError(400, 'Each service address needs recipientPhone');
+    const city = String(row?.city || '').trim();
+    const state = String(row?.state || '').trim();
+    const pinCode = String(row?.pinCode || '').trim();
+    if (!city) throw new ApiError(400, 'Each service address needs city');
+    if (!state) throw new ApiError(400, 'Each service address needs state');
+    if (!PINCODE_REGEX.test(pinCode)) throw new ApiError(400, 'Each service address needs a valid 6 digit pincode');
 
     let isDefault = Boolean(row?.isDefault);
     if (isDefault) {
@@ -369,9 +377,9 @@ const normalizeServiceAddressesPayload = (payload, existing = []) => {
       recipientName,
       recipientPhone,
       mapAddress: String(row?.mapAddress || '').trim(),
-      city: String(row?.city || 'New Delhi').trim() || 'New Delhi',
-      state: String(row?.state || 'Delhi').trim() || 'Delhi',
-      pinCode: String(row?.pinCode || '').trim(),
+      city,
+      state,
+      pinCode,
       latitude: row?.latitude !== undefined ? Number(row.latitude) : undefined,
       longitude: row?.longitude !== undefined ? Number(row.longitude) : undefined,
       isDefault,

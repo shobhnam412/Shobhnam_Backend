@@ -985,7 +985,7 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
       : undefined;
 
   const artists = await Artist.find({ status: 'APPROVED' })
-    .select('name phone email category location availability')
+    .select('name phone email category location availability serviceAddresses')
     .lean();
 
   const checks = await Promise.all(
@@ -1010,6 +1010,7 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
         email: artist.email,
         category: artist.category,
         location: artist.location,
+        serviceAddresses: artist.serviceAddresses || [],
       };
     }),
   );
@@ -1058,7 +1059,11 @@ const syncLinkedBookingForOrderItem = async (order, itemIndex, assignedArtists) 
     },
     location: {
       address: orderItem.addressDetail || 'Address unavailable',
+      houseFloor: orderItem.houseFloor,
+      towerBlock: orderItem.towerBlock,
+      landmark: orderItem.landmark,
       city: orderItem.city || 'City unavailable',
+      state: orderItem.state,
       pinCode: orderItem.pinCode,
     },
     pricing: {

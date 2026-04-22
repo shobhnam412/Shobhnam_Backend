@@ -4,6 +4,7 @@ import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
 const normalizeAddressPayload = (payload = {}) => {
+  const PINCODE_REGEX = /^\d{6}$/;
   const incomingType = String(payload.addressType ?? 'HOME').trim().toUpperCase();
   const allowedAddressTypes = ['HOME', 'WORK', 'OTHER', 'TEMPORARY'];
   const addressType = allowedAddressTypes.includes(incomingType) ? incomingType : null;
@@ -31,11 +32,23 @@ const normalizeAddressPayload = (payload = {}) => {
   if (!normalized.houseFloor) {
     throw new ApiError(400, 'House number / floor is required');
   }
+  if (!normalized.towerBlock) {
+    throw new ApiError(400, 'Tower / block is required');
+  }
   if (!normalized.recipientName) {
     throw new ApiError(400, 'Recipient name is required');
   }
   if (!normalized.recipientPhone) {
     throw new ApiError(400, 'Recipient phone number is required');
+  }
+  if (!normalized.city) {
+    throw new ApiError(400, 'City is required');
+  }
+  if (!normalized.state) {
+    throw new ApiError(400, 'State is required');
+  }
+  if (!PINCODE_REGEX.test(normalized.pinCode)) {
+    throw new ApiError(400, 'Pincode must be 6 digits');
   }
 
   return normalized;

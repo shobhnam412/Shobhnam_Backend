@@ -81,7 +81,11 @@ export const createOrder = asyncHandler(async (req, res) => {
 
     let addressLabel = String(item.addressLabel ?? "").trim();
     let addressDetail = String(item.addressDetail ?? "").trim();
+    let houseFloor = String(item.houseFloor ?? "").trim();
+    let towerBlock = String(item.towerBlock ?? "").trim();
+    let landmark = String(item.landmark ?? "").trim();
     let city = String(item.city ?? "").trim();
+    let state = String(item.state ?? "").trim();
     let pinCode = String(item.pinCode ?? "").trim();
     let normalizedAddressId = null;
 
@@ -102,7 +106,11 @@ export const createOrder = asyncHandler(async (req, res) => {
       ]
         .filter(Boolean)
         .join(", ");
+      houseFloor = ownedAddress.houseFloor;
+      towerBlock = ownedAddress.towerBlock;
+      landmark = ownedAddress.landmark;
       city = ownedAddress.city;
+      state = ownedAddress.state;
       pinCode = ownedAddress.pinCode;
     }
 
@@ -120,7 +128,11 @@ export const createOrder = asyncHandler(async (req, res) => {
       addressId: normalizedAddressId,
       addressDetail,
       addressLabel,
+      houseFloor,
+      towerBlock,
+      landmark,
       city,
+      state,
       pinCode,
     });
   }

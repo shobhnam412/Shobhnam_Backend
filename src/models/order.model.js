@@ -15,7 +15,11 @@ const orderItemSchema = new mongoose.Schema(
     },
     addressDetail: { type: String },
     addressLabel: { type: String },
+    houseFloor: { type: String },
+    towerBlock: { type: String },
+    landmark: { type: String },
     city: { type: String },
+    state: { type: String },
     pinCode: { type: String },
     artist: {
       type: mongoose.Schema.Types.ObjectId,
