@@ -94,7 +94,7 @@ export const getDashboardStats = asyncHandler(async (req, res) => {
     await Promise.all([
       User.countDocuments({ role: 'USER' }),
       Artist.countDocuments(),
-      Artist.countDocuments({ status: 'PENDING' }),
+      Artist.countDocuments({ status: 'PENDING', 'onboardingProgress.applied': true }),
       Artist.countDocuments({ status: 'APPROVED' }),
       Artist.countDocuments({ isLive: true }),
       Artist.countDocuments({ 'bankVerification.status': BANK_VERIFICATION_STATUS.PENDING }),
@@ -248,7 +248,7 @@ export const getArtistApplications = asyncHandler(async (req, res) => {
   const { page = 1, limit = 10, search = '' } = req.query;
   const skip = (page - 1) * limit;
 
-  const query = { status: 'PENDING' };
+  const query = { status: 'PENDING', 'onboardingProgress.applied': true };
   if (search) {
     query.$or = [
       { name: { $regex: search, $options: 'i' } },
@@ -279,7 +279,7 @@ export const getAllArtists = asyncHandler(async (req, res) => {
   const { page = 1, limit = 10, search = '', status } = req.query;
   const skip = (page - 1) * limit;
 
-  const query = {};
+  const query = { 'onboardingProgress.applied': true };
   if (search) {
     query.$or = [
       { name: { $regex: search, $options: 'i' } },

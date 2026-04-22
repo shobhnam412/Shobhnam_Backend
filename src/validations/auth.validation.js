@@ -36,6 +36,21 @@ export const authValidation = {
     }),
   }),
 
+  registerArtist: z.object({
+    body: z
+      .object({
+        onboardingToken: z.string().min(10, 'Onboarding token is required'),
+        fullName: z.string().min(1, 'Full name is required'),
+        gender: z.string().min(1, 'Gender is required'),
+        expertise: z.string().min(1, 'Expertise is required'),
+        experience: z.string().min(1, 'Experience is required'),
+        serviceLocation: z.string().min(1, 'Service location is required'),
+        profilePhoto: z.string().min(1, 'Profile photo is required'),
+        aadharCard: z.string().min(1, 'Aadhar card is required'),
+      })
+      .passthrough(),
+  }),
+
   adminLogin: z.object({
     body: z.object({
       email: z.string().email(),

@@ -1,4 +1,5 @@
 import { env } from '../config/env.js';
+import jwt from 'jsonwebtoken';
 import { Artist } from '../models/artist.model.js';
 import { OTP } from '../models/otp.model.js';
 import { User } from '../models/user.model.js';
@@ -34,6 +35,51 @@ const buildPhoneLookupQuery = (phone) => {
     .filter(Boolean);
 
   return { phone: { $in: [...new Set(variants)] } };
+};
+
+const ARTIST_ONBOARDING_TOKEN_EXPIRY = '2h';
+const ARTIST_ONBOARDING_PURPOSE = 'ARTIST_ONBOARDING';
+
+const generateArtistOnboardingToken = ({ phone, name }) =>
+  jwt.sign(
+    {
+      purpose: ARTIST_ONBOARDING_PURPOSE,
+      phone,
+      name: String(name || '').trim() || undefined,
+    },
+    env.JWT_ACCESS_SECRET,
+    { expiresIn: ARTIST_ONBOARDING_TOKEN_EXPIRY }
+  );
+
+const verifyArtistOnboardingToken = (token) => {
+  try {
+    const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET);
+    if (decoded?.purpose !== ARTIST_ONBOARDING_PURPOSE) {
+      throw new ApiError(401, 'Invalid onboarding token');
+    }
+    return decoded;
+  } catch {
+    throw new ApiError(401, 'Invalid or expired onboarding token');
+  }
+};
+
+const parseExperienceYears = (experience) => {
+  if (experience === undefined || experience === null || experience === '') return undefined;
+  if (typeof experience === 'number') return experience;
+  const text = String(experience).trim().toLowerCase();
+  if (text.includes('more than 15')) return 16;
+  const numbers = text.match(/(\d+)/g);
+  if (!numbers?.length) return undefined;
+  return parseInt(numbers[numbers.length - 1], 10);
+};
+
+const expertiseToCategory = {
+  Ramleela: 'Ramleela',
+  Sunderkand: 'Sunderkand',
+  'Bhajan sandhya': 'Bhajan sandhya',
+  'Bhagwat khatha': 'Bhagwat khatha',
+  Rudrabhishek: 'Rudrabhishek',
+  'Other services': 'Other',
 };
 
 // Helper to generate cookies
@@ -182,29 +228,29 @@ export const verifyOtpArtist = asyncHandler(async (req, res) => {
     await record.save();
   }
 
-  // Check if Artist exists by normalized phone variants
-  let artist = await Artist.findOne(buildPhoneLookupQuery(normalizedPhone));
+  // Existing artists can log in. First-time artists must complete onboarding first.
+  const artist = await Artist.findOne(buildPhoneLookupQuery(normalizedPhone));
   const isExistingArtist = !!artist;
 
   if (!artist) {
-    artist = await Artist.create({
+    const onboardingToken = generateArtistOnboardingToken({
       phone: normalizedPhone,
-      name: name || undefined,
-      status: 'PENDING',
-      onboardingProgress: {
-        applied: false,
-        accountSetup: false,
-        verified: false,
-        allDone: false,
-        lastUpdatedAt: new Date(),
-      },
-      bankVerification: {
-        status: 'NOT_SUBMITTED',
-      },
-      activationChargeStatus: 'PENDING',
-      isLive: false,
-      location: {},
+      name,
     });
+    return res.status(200).json(
+      new ApiResponse(
+        200,
+        {
+          artist: null,
+          accessToken: null,
+          refreshToken: null,
+          isExistingArtist: false,
+          requiresArtistForm: true,
+          onboardingToken,
+        },
+        'OTP verified. Complete artist onboarding to continue.'
+      )
+    );
   }
 
   const { accessToken, refreshToken } = await generateAccessAndRefreshTokens('ARTIST', artist._id);
@@ -226,6 +272,123 @@ export const verifyOtpArtist = asyncHandler(async (req, res) => {
           requiresArtistForm: !isExistingArtist,
         },
         'Artist logged in successfully'
+      )
+    );
+});
+
+export const registerArtistOnboarding = asyncHandler(async (req, res) => {
+  const {
+    onboardingToken,
+    fullName,
+    gender,
+    expertise,
+    experience,
+    minimumPrice,
+    maximumPrice,
+    serviceLocation,
+    serviceLocationDetails,
+    youtubeLink,
+    profilePhoto,
+    aadharCard,
+    ramleelaCharacter,
+    otherServiceType,
+  } = req.body;
+
+  if (!onboardingToken) throw new ApiError(400, 'Onboarding token is required');
+  const decoded = verifyArtistOnboardingToken(onboardingToken);
+  const normalizedPhone = normalizePhone(decoded?.phone);
+  if (!normalizedPhone) throw new ApiError(400, 'Invalid onboarding phone');
+
+  const existing = await Artist.findOne(buildPhoneLookupQuery(normalizedPhone));
+  if (existing) {
+    throw new ApiError(409, 'Artist profile already exists for this phone number');
+  }
+
+  const displayName = String(fullName || '').trim();
+  if (!displayName) throw new ApiError(400, 'Full name is required');
+  if (!gender) throw new ApiError(400, 'Gender is required');
+  if (!expertise) throw new ApiError(400, 'Expertise is required');
+  if (!serviceLocation || !String(serviceLocation).trim()) throw new ApiError(400, 'Service location is required');
+  if (!profilePhoto || !String(profilePhoto).trim()) throw new ApiError(400, 'Profile photo is required');
+  if (!aadharCard || !String(aadharCard).trim()) throw new ApiError(400, 'Aadhar card is required');
+
+  const requireCharacter = String(expertise).toLowerCase().includes('ramleela');
+  if (requireCharacter && !String(ramleelaCharacter || '').trim()) {
+    throw new ApiError(400, 'Ramleela character is required when expertise includes Ramleela');
+  }
+  const requireOtherServiceType = String(expertise).toLowerCase() === 'other services';
+  if (requireOtherServiceType && !String(otherServiceType || '').trim()) {
+    throw new ApiError(400, 'Other service type is required when expertise is Other services');
+  }
+
+  const min = Number(minimumPrice);
+  const max = Number(maximumPrice);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    throw new ApiError(400, 'Minimum and maximum price are required and must be valid numbers');
+  }
+  if (min < 0) throw new ApiError(400, 'Minimum price must be greater than or equal to 0');
+  if (max < min) throw new ApiError(400, 'Maximum price must be greater than or equal to minimum price');
+
+  const expYears = parseExperienceYears(experience);
+  const category = expertiseToCategory[expertise] || 'Other';
+  const complete = Boolean(
+    displayName &&
+      String(expertise || '').trim() &&
+      String(serviceLocation || '').trim() &&
+      String(profilePhoto || '').trim() &&
+      String(aadharCard || '').trim()
+  );
+
+  const artist = await Artist.create({
+    phone: normalizedPhone,
+    name: displayName,
+    gender,
+    expertise,
+    category,
+    ramleelaCharacter: ramleelaCharacter?.trim() || undefined,
+    otherServiceType: otherServiceType?.trim() || undefined,
+    experienceYears: expYears ?? 0,
+    minimumPrice: min,
+    maximumPrice: max,
+    pricing: {
+      basePrice: min,
+      minimumPrice: min,
+      maximumPrice: max,
+      currency: 'INR',
+    },
+    serviceLocation: String(serviceLocation).trim(),
+    serviceLocationDetails: serviceLocationDetails && typeof serviceLocationDetails === 'object' ? serviceLocationDetails : undefined,
+    youtubeLink: String(youtubeLink || '').trim(),
+    profilePhoto: String(profilePhoto).trim(),
+    aadharCard: String(aadharCard).trim(),
+    status: 'PENDING',
+    onboardingProgress: {
+      applied: complete,
+      accountSetup: complete,
+      verified: false,
+      allDone: false,
+      lastUpdatedAt: new Date(),
+    },
+    bankVerification: {
+      status: 'NOT_SUBMITTED',
+    },
+    activationChargeStatus: 'PENDING',
+    isLive: false,
+    location: {},
+  });
+
+  const { accessToken, refreshToken } = await generateAccessAndRefreshTokens('ARTIST', artist._id);
+  const options = { httpOnly: true, secure: true };
+
+  return res
+    .status(201)
+    .cookie('accessToken', accessToken, options)
+    .cookie('refreshToken', refreshToken, options)
+    .json(
+      new ApiResponse(
+        201,
+        { artist, accessToken, refreshToken },
+        'Artist profile created successfully'
       )
     );
 });
