@@ -45,10 +45,20 @@ export const getTimeToEventMs = (eventDate, nowMs = Date.now()) => {
   return eventMs - nowMs;
 };
 
+const toStartOfLocalDay = (dateInput) => {
+  const date = new Date(dateInput);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+};
+
 export const requiresFullPaymentByEventDate = (eventDate, nowMs = Date.now()) => {
-  const timeToEvent = getTimeToEventMs(eventDate, nowMs);
-  if (timeToEvent === null) return false;
-  return timeToEvent > 0 && timeToEvent <= THREE_DAYS_MS;
+  const eventDay = toStartOfLocalDay(eventDate);
+  if (!eventDay) return false;
+  const today = toStartOfLocalDay(nowMs);
+  if (!today) return false;
+  const cutoffDay = new Date(today);
+  cutoffDay.setDate(cutoffDay.getDate() + 3);
+  return eventDay.getTime() <= cutoffDay.getTime();
 };
 
 export const normalizePaymentPlanForEventDate = (paymentPlan, eventDate, nowMs = Date.now()) => {
