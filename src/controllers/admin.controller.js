@@ -10,8 +10,11 @@ import { User } from '../models/user.model.js';
 import {
   BOOKING_STATUS,
   PAYMENT_PLAN,
+  PAYMENT_STATUS,
+  createHappyCode,
   normalizePaymentPlanForEventDate,
   normalizePaymentPlanForOrderItems,
+  requiresFullPaymentByEventDate,
 } from '../utils/bookingLifecycle.js';
 import mongoose from 'mongoose';
 import { ApiError } from '../utils/ApiError.js';
@@ -877,6 +880,71 @@ const buildOrderItemTypeLabel = (orderItem) => {
   return type || 'Order package';
 };
 
+const toDateKey = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const projectOrderForLifecycle = (order) => {
+  const data = order?.toObject ? order.toObject() : order;
+  const todayKey = toDateKey(new Date());
+  const items = (data.items || []).map((item) => {
+    const assigned = Boolean(item.artist) || (Array.isArray(item.assignedArtists) && item.assignedArtists.length > 0);
+    const eventStarted = Boolean(todayKey && toDateKey(item.date) && todayKey >= toDateKey(item.date));
+    let lifecycleStatus = item.status || 'PENDING';
+    if (lifecycleStatus === BOOKING_STATUS.UPCOMING && eventStarted && assigned && Number(item.remainingAmount || 0) <= 0) {
+      lifecycleStatus = BOOKING_STATUS.ONGOING;
+    }
+    return {
+      ...item,
+      lifecycleStatus,
+      isAssigned: assigned,
+    };
+  });
+  return {
+    ...data,
+    items,
+    paymentStatusLabel:
+      data.paymentStatus === PAYMENT_STATUS.PAID && data.paymentPlan === PAYMENT_PLAN.PARTIAL
+        ? 'PARTIALLY_PAID'
+        : data.paymentStatus,
+  };
+};
+
+const hasAssignedOrderArtists = (orderItem) => {
+  if (Array.isArray(orderItem?.assignedArtists) && orderItem.assignedArtists.length > 0) return true;
+  return Boolean(orderItem?.artist);
+};
+
+const resolveOrderItemStatus = ({ orderItem, orderPaymentStatus }) => {
+  if (!orderItem) return 'PENDING';
+  if (orderItem.status === BOOKING_STATUS.CANCELLED || orderItem.status === BOOKING_STATUS.COMPLETED) {
+    return orderItem.status;
+  }
+  if (orderItem.status === BOOKING_STATUS.ONGOING) return BOOKING_STATUS.ONGOING;
+  if (orderItem.status === BOOKING_STATUS.MANUAL_REVIEW) return BOOKING_STATUS.MANUAL_REVIEW;
+
+  const fullyPaid = Number(orderItem.remainingAmount || 0) <= 0 || orderPaymentStatus === PAYMENT_STATUS.PAID;
+  if (!fullyPaid) {
+    return requiresFullPaymentByEventDate(orderItem.date) ? BOOKING_STATUS.MANUAL_REVIEW : BOOKING_STATUS.PENDING;
+  }
+
+  return hasAssignedOrderArtists(orderItem) ? BOOKING_STATUS.UPCOMING : BOOKING_STATUS.PENDING;
+};
+
+const ensureOrderItemHappyCode = (orderItem) => {
+  const fullyPaid = Number(orderItem?.remainingAmount || 0) <= 0;
+  if (!fullyPaid) return;
+  if (!hasAssignedOrderArtists(orderItem)) return;
+  if (orderItem.happyCode) return;
+  orderItem.happyCode = createHappyCode();
+  orderItem.happyCodeGeneratedAt = new Date();
+};
+
 const findArtistBookingConflict = async ({ artistId, date, slot, excludeBookingId }) => {
   const { startUtc, endUtc, dateKey } = getSlotIntervalUtc(date, slot);
   if (!startUtc || !endUtc || !dateKey) return null;
@@ -1013,19 +1081,30 @@ const syncLinkedBookingForOrderItem = async (order, itemIndex, assignedArtists) 
   booking.sourceType = bookingData.sourceType;
   booking.sourceRef = bookingData.sourceRef;
   if (booking.status === 'CANCELLED' || booking.status === 'REJECTED') {
-    booking.status = 'PENDING';
+    booking.status = orderItem.status || 'PENDING';
   }
 
   syncLegacyAssignmentFields(booking, assignedArtists);
   booking.inventoryCommitted = Number(order.amountPaid || 0) > 0;
+  booking.status = orderItem.status || booking.status;
+  booking.paymentStatus = Number(orderItem.remainingAmount || 0) <= 0 ? PAYMENT_STATUS.PAID : PAYMENT_STATUS.PENDING;
+  booking.paymentPlan = order.paymentPlan || booking.paymentPlan;
+  booking.amountPaid = Number(orderItem.amountPaid || 0);
+  booking.remainingAmount = Number(orderItem.remainingAmount || 0);
+  if (orderItem.happyCode) {
+    booking.happyCode = orderItem.happyCode;
+    booking.happyCodeGeneratedAt = orderItem.happyCodeGeneratedAt || booking.happyCodeGeneratedAt || new Date();
+  }
   await booking.save();
 };
 
 export const getAllBookings = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, status } = req.query;
+  const { page = 1, limit = 10, status, includeOrderLinked = 'false' } = req.query;
   const skip = (page - 1) * limit;
 
-  const query = {};
+  const query = {
+    ...(String(includeOrderLinked).toLowerCase() === 'true' ? {} : { sourceType: 'DIRECT_BOOKING' }),
+  };
   if (status) query.status = status;
 
   const [bookings, totalCount] = await Promise.all([
@@ -1205,11 +1284,13 @@ export const getAllOrders = asyncHandler(async (req, res) => {
     Order.countDocuments(query),
   ]);
 
+  const projectedOrders = orders.map(projectOrderForLifecycle);
+
   res.status(200).json(
     new ApiResponse(
       200,
       {
-        orders,
+        orders: projectedOrders,
         pagination: {
           page: Number(page),
           limit: Number(limit),
@@ -1229,7 +1310,7 @@ export const getOrderById = asyncHandler(async (req, res) => {
     .populate('items.artist', 'name phone email category location')
     .populate('items.assignedArtists.artist', 'name phone email category location');
   if (!order) throw new ApiError(404, 'Order not found');
-  res.status(200).json(new ApiResponse(200, order, 'Order details fetched'));
+  res.status(200).json(new ApiResponse(200, projectOrderForLifecycle(order), 'Order details fetched'));
 });
 
 export const deleteOrderByAdmin = asyncHandler(async (req, res) => {
@@ -1317,6 +1398,11 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
   }
 
   syncOrderItemLegacyAssignmentFields(targetItem, assignedArtists);
+  targetItem.status = resolveOrderItemStatus({
+    orderItem: targetItem,
+    orderPaymentStatus: order.paymentStatus,
+  });
+  ensureOrderItemHappyCode(targetItem);
 
   await order.save();
   await syncLinkedBookingForOrderItem(order, parsedItemIndex, assignedArtists);
@@ -1357,6 +1443,14 @@ export const unassignArtistFromOrderItem = asyncHandler(async (req, res) => {
   }
 
   syncOrderItemLegacyAssignmentFields(targetItem, updatedAssignedArtists);
+  targetItem.status = resolveOrderItemStatus({
+    orderItem: targetItem,
+    orderPaymentStatus: order.paymentStatus,
+  });
+  if (!hasAssignedOrderArtists(targetItem)) {
+    targetItem.happyCode = undefined;
+    targetItem.happyCodeGeneratedAt = undefined;
+  }
 
   await order.save();
   await syncLinkedBookingForOrderItem(order, parsedItemIndex, updatedAssignedArtists);

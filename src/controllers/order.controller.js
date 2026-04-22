@@ -14,6 +14,39 @@ import { ALL_BOOKING_SLOT_ENUM } from "../utils/istTime.js";
 const TRAVELING_FEE = 500;
 const ALLOWED_SLOTS = new Set(ALL_BOOKING_SLOT_ENUM);
 
+const toDateKey = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const withLifecycleProjection = (order) => {
+  const data = order?.toObject ? order.toObject() : order;
+  const todayKey = toDateKey(new Date());
+  const items = (data.items || []).map((item) => {
+    const assigned = Boolean(item.artist) || (Array.isArray(item.assignedArtists) && item.assignedArtists.length > 0);
+    const eventStarted = Boolean(todayKey && toDateKey(item.date) && todayKey >= toDateKey(item.date));
+    let lifecycleStatus = item.status || 'PENDING';
+    if (lifecycleStatus === 'UPCOMING' && eventStarted && assigned && Number(item.remainingAmount || 0) <= 0) {
+      lifecycleStatus = 'ONGOING';
+    }
+    return {
+      ...item,
+      lifecycleStatus,
+      isAssigned: assigned,
+    };
+  });
+  return {
+    ...data,
+    items,
+    paymentStatusLabel:
+      data.paymentStatus === 'PAID' && data.paymentPlan === 'PARTIAL' ? 'PARTIALLY_PAID' : data.paymentStatus,
+  };
+};
+
 export const createOrder = asyncHandler(async (req, res) => {
   const { items, paymentPlan = "FULL" } = req.body;
 
@@ -130,5 +163,6 @@ export const getUserOrders = asyncHandler(async (req, res) => {
     createdAt: -1,
   });
 
-  res.status(200).json(new ApiResponse(200, orders, "User orders fetched"));
+  const projected = orders.map(withLifecycleProjection);
+  res.status(200).json(new ApiResponse(200, projected, "User orders fetched"));
 });

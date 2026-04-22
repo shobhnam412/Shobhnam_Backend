@@ -1,4 +1,5 @@
 import { Booking } from '../models/booking.model.js';
+import { Order } from '../models/order.model.js';
 import {
   BOOKING_STATUS,
   PAYMENT_STATUS,
@@ -31,7 +32,32 @@ export const runBookingReminderSweep = async () => {
     })
   );
 
-  return updates.length;
+  const orderCandidates = await Order.find({
+    paymentStatus: { $ne: PAYMENT_STATUS.PAID },
+    remainingAmount: { $gt: 0 },
+  });
+
+  let updatedOrderItems = 0;
+  await Promise.all(
+    orderCandidates.map(async (order) => {
+      let hasUpdates = false;
+      for (const item of order.items || []) {
+        const shouldEscalate = requiresFullPaymentByEventDate(item?.date);
+        const isUnpaid = Number(item?.remainingAmount || 0) > 0;
+        if (!shouldEscalate || !isUnpaid) continue;
+        if (item.status !== BOOKING_STATUS.MANUAL_REVIEW) {
+          item.status = BOOKING_STATUS.MANUAL_REVIEW;
+          updatedOrderItems += 1;
+          hasUpdates = true;
+        }
+      }
+      if (hasUpdates) {
+        await order.save();
+      }
+    })
+  );
+
+  return updates.length + updatedOrderItems;
 };
 
 export const startBookingReminderWorker = () => {

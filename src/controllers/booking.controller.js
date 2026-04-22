@@ -246,8 +246,8 @@ export const completeBooking = asyncHandler(async (req, res) => {
   const booking = await Booking.findOne(query);
   if (!booking) throw new ApiError(404, 'Booking not found');
 
-  if (![BOOKING_STATUS.ONGOING, BOOKING_STATUS.CONFIRMED, BOOKING_STATUS.UPCOMING].includes(booking.status)) {
-    throw new ApiError(400, 'Only ongoing or upcoming bookings can be marked as completed');
+  if (booking.status !== BOOKING_STATUS.ONGOING) {
+    throw new ApiError(400, 'Only ongoing bookings can be marked as completed');
   }
 
   booking.status = BOOKING_STATUS.COMPLETED;
@@ -281,8 +281,10 @@ export const getArtistBookings = asyncHandler(async (req, res) => {
 });
 
 export const getAllBookingsAdmin = asyncHandler(async (req, res) => {
-  const { page = 1, limit = 10, status } = req.query;
-  const query = {};
+  const { page = 1, limit = 10, status, includeOrderLinked = 'false' } = req.query;
+  const query = {
+    ...(String(includeOrderLinked).toLowerCase() === 'true' ? {} : { sourceType: 'DIRECT_BOOKING' }),
+  };
   if (status) query.status = status;
 
   const skip = (page - 1) * limit;

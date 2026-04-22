@@ -9,6 +9,7 @@ import {
   PAYMENT_STATUS,
   PAYMENT_TYPE,
   createHappyCode,
+  requiresFullPaymentByEventDate,
 } from '../utils/bookingLifecycle.js';
 import { ApiError } from '../utils/ApiError.js';
 
@@ -125,7 +126,59 @@ const applyOnOrder = async ({ orderId, amount, paymentType, requestId }) => {
   if (fullyPaid) {
     order.fullyPaidAt = order.fullyPaidAt || new Date();
   }
+
+  const totalItemAmount = Number(
+    (order.items || []).reduce((sum, item) => sum + Number(item?.price || 0), 0)
+  );
+  const paidRatio = totalAmount > 0 ? Math.min(updatedAmountPaid / totalAmount, 1) : 0;
+  for (const item of order.items || []) {
+    const itemPrice = Number(item?.price || 0);
+    const proportionalPaid = totalItemAmount > 0 ? itemPrice * paidRatio : 0;
+    const nextItemPaid = Math.max(0, Math.min(itemPrice, proportionalPaid));
+    const nextItemRemaining = Math.max(0, itemPrice - nextItemPaid);
+    item.amountPaid = nextItemPaid;
+    item.remainingAmount = nextItemRemaining;
+    item.paymentPlan = order.paymentPlan;
+
+    if (nextItemRemaining <= 0) {
+      item.fullyPaidAt = item.fullyPaidAt || new Date();
+      if (Array.isArray(item.assignedArtists) && item.assignedArtists.length > 0) {
+        item.status = BOOKING_STATUS.UPCOMING;
+        if (!item.happyCode) {
+          item.happyCode = createHappyCode();
+          item.happyCodeGeneratedAt = new Date();
+        }
+      } else {
+        item.status = BOOKING_STATUS.PENDING;
+      }
+    } else {
+      item.status = requiresFullPaymentByEventDate(item.date)
+        ? BOOKING_STATUS.MANUAL_REVIEW
+        : BOOKING_STATUS.PENDING;
+    }
+  }
   await order.save();
+
+  await Promise.all(
+    (order.items || []).map(async (item, itemIndex) => {
+      const linkedBooking = await Booking.findOne({
+        sourceType: 'ORDER_ITEM',
+        'sourceRef.orderId': order._id,
+        'sourceRef.itemIndex': itemIndex,
+      });
+      if (!linkedBooking) return;
+      linkedBooking.paymentStatus = Number(item.remainingAmount || 0) <= 0 ? PAYMENT_STATUS.PAID : PAYMENT_STATUS.PENDING;
+      linkedBooking.paymentPlan = order.paymentPlan || linkedBooking.paymentPlan;
+      linkedBooking.amountPaid = Number(item.amountPaid || 0);
+      linkedBooking.remainingAmount = Number(item.remainingAmount || 0);
+      linkedBooking.status = item.status || linkedBooking.status;
+      if (item.happyCode) {
+        linkedBooking.happyCode = item.happyCode;
+        linkedBooking.happyCodeGeneratedAt = item.happyCodeGeneratedAt || linkedBooking.happyCodeGeneratedAt || new Date();
+      }
+      await linkedBooking.save();
+    })
+  );
 
   const payment = await Payment.create({
     order: order._id,
