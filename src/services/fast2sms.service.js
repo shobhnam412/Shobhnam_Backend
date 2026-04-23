@@ -2,7 +2,6 @@ import { env } from '../config/env.js';
 
 const MAX_RETRIES = 2;
 const RETRY_DELAYS_MS = [250, 750];
-const FAST2SMS_MESSAGE_ID_REGEX = /^\d{6,22}$/;
 
 const normalizeIndianPhone = (phone) => {
   const digits = String(phone || '').replace(/\D/g, '');
@@ -16,17 +15,13 @@ const buildFast2SmsPayload = ({ phone, templateId, variables }) => {
     ? variables.map((value) => String(value ?? '').trim()).join('|')
     : '';
 
-  const payload = {
+  return {
     route: env.FAST2SMS_ROUTE,
     sender_id: env.FAST2SMS_SENDER_ID,
     message: templateId,
     variables_values: variableValues,
     numbers,
   };
-  if (String(env.FAST2SMS_ENTITY_ID || '').trim()) {
-    payload.entity_id = env.FAST2SMS_ENTITY_ID;
-  }
-  return payload;
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -44,14 +39,7 @@ const buildSmsErrorMessage = (error, data, response) => {
 };
 
 const sendTemplateSMS = async ({ phone, templateId, variables = [], eventName = 'GENERIC_SMS' }) => {
-  const normalizedTemplateId = String(templateId || '').trim();
-  if (!FAST2SMS_MESSAGE_ID_REGEX.test(normalizedTemplateId)) {
-    throw new Error(
-      `[SMS][${eventName}] Invalid template identifier. FAST2SMS_TEMPLATE_* must be Fast2SMS numeric message ID (usually 6 digits), not DLT template ID or full text.`
-    );
-  }
-
-  const payload = buildFast2SmsPayload({ phone, templateId: normalizedTemplateId, variables });
+  const payload = buildFast2SmsPayload({ phone, templateId, variables });
 
   let lastError = null;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
