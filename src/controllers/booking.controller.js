@@ -1,8 +1,7 @@
-import { env } from '../config/env.js';
 import { Artist } from '../models/artist.model.js';
 import { Booking } from '../models/booking.model.js';
 import { User } from '../models/user.model.js';
-import { sendSMS } from '../services/twilio.service.js';
+import { sendServiceCompleted } from '../services/fast2sms.service.js';
 import {
   BOOKING_STATUS,
   PAYMENT_STATUS,
@@ -22,18 +21,6 @@ import { getSlotIntervalUtc, toDateKeyInIST } from '../utils/istTime.js';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-
-const mockSmsCheck = async (phone, msg) => {
-  if (env.NODE_ENV !== 'production') {
-    console.log(`[DEV SMS to ${phone}]: ${msg}`);
-  } else {
-    try {
-      await sendSMS(phone, msg);
-    } catch (e) {
-      console.error('Failed to send SMS Notification', e);
-    }
-  }
-};
 
 const normalizeBookingStatusForClient = (booking) => {
   if (!booking) return booking;
@@ -194,9 +181,6 @@ export const createBooking = asyncHandler(async (req, res) => {
     inventoryCommitted: false,
   });
 
-  // Notify Artist
-  await mockSmsCheck(artist.phone, `You have a new booking request for ${type} on ${new Date(date).toDateString()}. Check your Shobhnam app.`);
-
   res.status(201).json(
     new ApiResponse(
       201,
@@ -232,12 +216,6 @@ export const respondToBooking = asyncHandler(async (req, res) => {
 
   booking.status = status === 'CONFIRMED' ? BOOKING_STATUS.CONFIRMED : BOOKING_STATUS.REJECTED;
   await booking.save();
-
-  // Notify User
-  await mockSmsCheck(
-    booking.user.phone, 
-    `Your Shobhnam booking for ${booking.eventDetails.type} has been ${status} by the artist.`
-  );
 
   res.status(200).json(new ApiResponse(200, booking, `Booking successfully ${status}`));
 });
@@ -334,7 +312,7 @@ export const markBookingOngoing = asyncHandler(async (req, res) => {
   const booking = await Booking.findOne({
     _id: id,
     $or: [{ artist: req.user._id }, { 'assignedArtists.artist': req.user._id }],
-  });
+  }).populate('user', 'phone');
   if (!booking) throw new ApiError(404, 'Booking not found or not assigned to you');
   if (booking.paymentStatus !== PAYMENT_STATUS.PAID) {
     throw new ApiError(400, 'Booking must be fully paid before marking as ongoing');
@@ -371,7 +349,7 @@ export const completeBookingWithHappyCode = asyncHandler(async (req, res) => {
   const booking = await Booking.findOne({
     _id: id,
     $or: [{ artist: req.user._id }, { 'assignedArtists.artist': req.user._id }],
-  });
+  }).populate('user', 'phone');
   if (!booking) throw new ApiError(404, 'Booking not found or not assigned to you');
   if (booking.status !== BOOKING_STATUS.ONGOING) {
     throw new ApiError(400, 'Only ongoing bookings can be completed with happy code');
@@ -389,6 +367,18 @@ export const completeBookingWithHappyCode = asyncHandler(async (req, res) => {
     closedByRole: 'ARTIST',
   };
   await booking.save();
+
+  if (!booking.smsNotifications?.serviceCompletedSentAt && booking.user?.phone) {
+    await sendServiceCompleted({
+      phone: booking.user.phone,
+      orderId: String(booking._id),
+    });
+    booking.smsNotifications = {
+      ...(booking.smsNotifications || {}),
+      serviceCompletedSentAt: new Date(),
+    };
+    await booking.save();
+  }
 
   res.status(200).json(new ApiResponse(200, normalizeBookingStatusForClient(booking), 'Booking completed successfully'));
 });

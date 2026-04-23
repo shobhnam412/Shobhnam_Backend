@@ -3,6 +3,7 @@ import { Booking } from '../models/booking.model.js';
 import { Order } from '../models/order.model.js';
 import { Payment } from '../models/payment.model.js';
 import { User } from '../models/user.model.js';
+import { sendBookingConfirmed } from './fast2sms.service.js';
 import {
   BOOKING_STATUS,
   PAYMENT_PLAN,
@@ -12,6 +13,45 @@ import {
   requiresFullPaymentByEventDate,
 } from '../utils/bookingLifecycle.js';
 import { ApiError } from '../utils/ApiError.js';
+
+const formatBookingDateTime = (eventDetails = {}) => {
+  const date = eventDetails?.date ? new Date(eventDetails.date) : null;
+  const validDate = date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString('en-IN') : 'TBD';
+  const slot = String(eventDetails?.slot || '').trim();
+  return slot ? `${validDate} ${slot}` : validDate;
+};
+
+const formatAddress = (location = {}) =>
+  [location?.address, location?.houseFloor, location?.towerBlock, location?.landmark, location?.city, location?.state, location?.pinCode]
+    .filter(Boolean)
+    .map((part) => String(part).trim())
+    .filter(Boolean)
+    .join(', ');
+
+const sendBookingConfirmedSmsIfEligible = async (booking) => {
+  if (!booking) return;
+  if (booking.smsNotifications?.bookingConfirmedSentAt) return;
+  if (booking.paymentStatus !== PAYMENT_STATUS.PAID) return;
+  if (![BOOKING_STATUS.UPCOMING, BOOKING_STATUS.CONFIRMED].includes(booking.status)) return;
+
+  const user = await User.findById(booking.user).select('phone');
+  if (!user?.phone) return;
+
+  await sendBookingConfirmed({
+    phone: user.phone,
+    orderId: String(booking._id),
+    packageName: String(booking?.eventDetails?.type || 'Service Package'),
+    dateTime: formatBookingDateTime(booking.eventDetails),
+    address: formatAddress(booking.location),
+    paidAmount: Math.round(Number(booking.amountPaid || 0)),
+  });
+
+  booking.smsNotifications = {
+    ...(booking.smsNotifications || {}),
+    bookingConfirmedSentAt: new Date(),
+  };
+  await booking.save();
+};
 
 export const fulfillActivationPayment = async ({ activationFor, userId, artistId, amount, requestId }) => {
   if (activationFor === 'ARTIST') {
@@ -105,6 +145,7 @@ const applyOnBooking = async ({ bookingId, amount, paymentType, requestId }) => 
 
   booking.paymentId = payment._id;
   await booking.save();
+  await sendBookingConfirmedSmsIfEligible(booking);
 
   return booking;
 };

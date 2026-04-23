@@ -3,19 +3,10 @@ import jwt from 'jsonwebtoken';
 import { Artist } from '../models/artist.model.js';
 import { OTP } from '../models/otp.model.js';
 import { User } from '../models/user.model.js';
-import { sendSMS } from '../services/twilio.service.js';
+import { sendAuthOtp } from '../services/fast2sms.service.js';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-
-// Demo numbers for development: accept OTP 123456 without prior sendOtp
-const TEST_PHONES = new Set([
-  '+918546031266',
-  '+918303438175',
-  '+919369299589',
-  '+919876543210',
-]);
-const TEST_OTP = '123456';
 
 // Normalize phone to E.164 for Indian numbers (Twilio needs +91XXXXXXXXXX)
 const normalizePhone = (phone) => {
@@ -105,46 +96,20 @@ export const sendOtp = asyncHandler(async (req, res) => {
   if (!phone) throw new ApiError(400, 'Phone number is required');
 
   const normalizedPhone = normalizePhone(phone);
-
-  // Demo numbers: use fixed OTP, skip SMS send
-  const isTestNumber = TEST_PHONES.has(normalizedPhone);
-  const otpCode = isTestNumber ? TEST_OTP : Math.floor(100000 + Math.random() * 900000).toString();
+  const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+  const otpExpiryMinutes = Number(env.OTP_EXPIRY_MINUTES || 10);
 
   // Save OTP in Database
   await OTP.create({
     phone: normalizedPhone,
     otp: otpCode,
-    expiresAt: new Date(Date.now() + 5 * 60000), // 5 mins
+    expiresAt: new Date(Date.now() + otpExpiryMinutes * 60000),
   });
 
-  // Send OTP via Twilio SMS (skip for test number)
-  if (isTestNumber) {
-    console.log(`[TEST MODE] OTP for ${normalizedPhone}: ${otpCode} (no SMS sent)`);
-  } else {
-    try {
-      await sendSMS(normalizedPhone, `Your Shobhnam OTP is ${otpCode}. It will expire in 5 minutes.`);
-    } catch (error) {
-      const msg = String(error?.message || '');
-      const isProviderConfigError =
-        /account sid/i.test(msg) ||
-        /auth token/i.test(msg) ||
-        /from/i.test(msg) ||
-        /twilio/i.test(msg) ||
-        /credential/i.test(msg);
-
-      // In development, do not block OTP flow due to provider setup issues.
-      if (env.NODE_ENV !== 'production' && isProviderConfigError) {
-        console.warn(`[DEV FALLBACK] Twilio SMS send failed for ${normalizedPhone}: ${msg}`);
-        console.log(`[DEV FALLBACK OTP] ${normalizedPhone}: ${otpCode}`);
-      } else {
-        throw new ApiError(
-          502,
-          isProviderConfigError
-            ? 'OTP provider is not configured correctly. Please contact support.'
-            : 'Failed to send OTP. Please try again.'
-        );
-      }
-    }
+  try {
+    await sendAuthOtp(normalizedPhone, otpCode);
+  } catch (error) {
+    throw new ApiError(502, 'Failed to send OTP. Please try again.');
   }
 
   return res.status(200).json(
@@ -158,20 +123,15 @@ export const verifyOtpUser = asyncHandler(async (req, res) => {
   if (!phone || !otp) throw new ApiError(400, 'Phone and OTP are required');
 
   const normalizedPhone = normalizePhone(phone);
-
-  // Demo numbers: accept 123456 without DB lookup
-  const isTestNumber = TEST_PHONES.has(normalizedPhone) && otp === TEST_OTP;
-  if (!isTestNumber) {
-    const record = await OTP.findOne({
-      phone: normalizedPhone,
-      otp,
-      isUsed: false,
-      expiresAt: { $gt: new Date() },
-    });
-    if (!record) throw new ApiError(400, 'Invalid or Expired OTP');
-    record.isUsed = true;
-    await record.save();
-  }
+  const record = await OTP.findOne({
+    phone: normalizedPhone,
+    otp,
+    isUsed: false,
+    expiresAt: { $gt: new Date() },
+  });
+  if (!record) throw new ApiError(400, 'Invalid or Expired OTP');
+  record.isUsed = true;
+  await record.save();
 
   // Check if User exists by normalized phone variants
   let user = await User.findOne(buildPhoneLookupQuery(normalizedPhone));
@@ -213,20 +173,15 @@ export const verifyOtpArtist = asyncHandler(async (req, res) => {
   if (!phone || !otp) throw new ApiError(400, 'Phone and OTP are required');
 
   const normalizedPhone = normalizePhone(phone);
-
-  // Demo numbers: accept 123456 without DB lookup
-  const isTestNumber = TEST_PHONES.has(normalizedPhone) && otp === TEST_OTP;
-  if (!isTestNumber) {
-    const record = await OTP.findOne({
-      phone: normalizedPhone,
-      otp,
-      isUsed: false,
-      expiresAt: { $gt: new Date() },
-    });
-    if (!record) throw new ApiError(400, 'Invalid or Expired OTP');
-    record.isUsed = true;
-    await record.save();
-  }
+  const record = await OTP.findOne({
+    phone: normalizedPhone,
+    otp,
+    isUsed: false,
+    expiresAt: { $gt: new Date() },
+  });
+  if (!record) throw new ApiError(400, 'Invalid or Expired OTP');
+  record.isUsed = true;
+  await record.save();
 
   // Existing artists can log in. First-time artists must complete onboarding first.
   const artist = await Artist.findOne(buildPhoneLookupQuery(normalizedPhone));

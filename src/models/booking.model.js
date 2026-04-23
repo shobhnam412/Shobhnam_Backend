@@ -104,6 +104,17 @@ const bookingSchema = new mongoose.Schema(
     happyCodeVerifiedAt: {
       type: Date,
     },
+    smsNotifications: {
+      bookingConfirmedSentAt: {
+        type: Date,
+      },
+      artistAssignedSentAt: {
+        type: Date,
+      },
+      serviceCompletedSentAt: {
+        type: Date,
+      },
+    },
     closure: {
       requestedByArtistAt: {
         type: Date,

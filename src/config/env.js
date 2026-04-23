@@ -15,10 +15,16 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(1, 'JWT Refresh Secret is required'),
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
-  
-  TWILIO_ACCOUNT_SID: z.string().optional(),
-  TWILIO_AUTH_TOKEN: z.string().optional(),
-  TWILIO_PHONE_NUMBER: z.string().optional(),
+
+  OTP_EXPIRY_MINUTES: z.coerce.number().int().min(1).max(30).default(10),
+  FAST2SMS_API_KEY: z.string().min(1, 'FAST2SMS_API_KEY is required'),
+  FAST2SMS_API_URL: z.string().url().default('https://www.fast2sms.com/dev/bulkV2'),
+  FAST2SMS_ROUTE: z.string().default('dlt'),
+  FAST2SMS_SENDER_ID: z.string().optional(),
+  FAST2SMS_TEMPLATE_AUTH_OTP: z.string().min(1, 'FAST2SMS_TEMPLATE_AUTH_OTP is required'),
+  FAST2SMS_TEMPLATE_BOOKING_CONFIRMED: z.string().min(1, 'FAST2SMS_TEMPLATE_BOOKING_CONFIRMED is required'),
+  FAST2SMS_TEMPLATE_ARTIST_ASSIGNED: z.string().min(1, 'FAST2SMS_TEMPLATE_ARTIST_ASSIGNED is required'),
+  FAST2SMS_TEMPLATE_SERVICE_COMPLETED: z.string().min(1, 'FAST2SMS_TEMPLATE_SERVICE_COMPLETED is required'),
 
   WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
   WHATSAPP_ACCESS_TOKEN: z.string().optional(),
@@ -37,30 +43,6 @@ const envSchema = z.object({
   ADMIN_PASSWORD: z.string().min(6, 'Admin Password must be at least 6 characters'),
 
   CLIENT_URL: z.string().url().default('http://localhost:5173'),
-}).superRefine((data, ctx) => {
-  if (data.NODE_ENV !== 'development') {
-    if (!data.TWILIO_ACCOUNT_SID) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['TWILIO_ACCOUNT_SID'],
-        message: 'TWILIO_ACCOUNT_SID is required outside development',
-      });
-    }
-    if (!data.TWILIO_AUTH_TOKEN) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['TWILIO_AUTH_TOKEN'],
-        message: 'TWILIO_AUTH_TOKEN is required outside development',
-      });
-    }
-    if (!data.TWILIO_PHONE_NUMBER) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['TWILIO_PHONE_NUMBER'],
-        message: 'TWILIO_PHONE_NUMBER is required outside development',
-      });
-    }
-  }
 });
 
 const _env = envSchema.safeParse(process.env);
