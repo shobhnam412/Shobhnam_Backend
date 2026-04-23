@@ -20,6 +20,7 @@ const envSchema = z.object({
   FAST2SMS_API_KEY: z.string().min(1, 'FAST2SMS_API_KEY is required'),
   FAST2SMS_API_URL: z.string().url().default('https://www.fast2sms.com/dev/bulkV2'),
   FAST2SMS_ROUTE: z.string().default('dlt'),
+  FAST2SMS_ENTITY_ID: z.string().optional(),
   FAST2SMS_SENDER_ID: z.string().optional(),
   FAST2SMS_TEMPLATE_AUTH_OTP: z.string().min(1, 'FAST2SMS_TEMPLATE_AUTH_OTP is required'),
   FAST2SMS_TEMPLATE_BOOKING_CONFIRMED: z.string().min(1, 'FAST2SMS_TEMPLATE_BOOKING_CONFIRMED is required'),
@@ -43,6 +44,17 @@ const envSchema = z.object({
   ADMIN_PASSWORD: z.string().min(6, 'Admin Password must be at least 6 characters'),
 
   CLIENT_URL: z.string().url().default('http://localhost:5173'),
+}).superRefine((data, ctx) => {
+  const isDltRoute = String(data.FAST2SMS_ROUTE || '').toLowerCase() === 'dlt';
+  if (!isDltRoute) return;
+
+  if (!String(data.FAST2SMS_SENDER_ID || '').trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['FAST2SMS_SENDER_ID'],
+      message: 'FAST2SMS_SENDER_ID is required for dlt route',
+    });
+  }
 });
 
 const _env = envSchema.safeParse(process.env);
