@@ -348,6 +348,28 @@ export const registerArtistOnboarding = asyncHandler(async (req, res) => {
     );
 });
 
+export const uploadArtistOnboardingProfilePhoto = asyncHandler(async (req, res) => {
+  const onboardingToken = String(req.body?.onboardingToken || '').trim();
+  if (!onboardingToken) throw new ApiError(400, 'Onboarding token is required');
+  verifyArtistOnboardingToken(onboardingToken);
+  if (!req.file?.location) throw new ApiError(400, 'No file uploaded');
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, { fileSavedUrl: req.file.location }, 'Profile photo uploaded'));
+});
+
+export const uploadArtistOnboardingAadhar = asyncHandler(async (req, res) => {
+  const onboardingToken = String(req.body?.onboardingToken || '').trim();
+  if (!onboardingToken) throw new ApiError(400, 'Onboarding token is required');
+  verifyArtistOnboardingToken(onboardingToken);
+  if (!req.file?.location) throw new ApiError(400, 'No file uploaded');
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, { fileSavedUrl: req.file.location }, 'Aadhar card uploaded'));
+});
+
 export const hasDualProfile = asyncHandler(async (req, res) => {
   const current = req.user;
   if (!current) throw new ApiError(401, 'Unauthorized');
