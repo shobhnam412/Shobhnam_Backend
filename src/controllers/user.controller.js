@@ -45,3 +45,25 @@ export const updateUserProfile = asyncHandler(async (req, res) => {
     new ApiResponse(200, updatedUser, 'Profile updated successfully')
   );
 });
+
+/**
+ * Dedicated single-file upload for a user's profile photo. Mirrors the artist
+ * `uploadProfilePhoto` flow: multer-s3 streams the file to S3 (bucket folder
+ * `UsersData/ProfilePictures/`), then we persist `req.file.location` to the
+ * user's `profilePhoto` field and return the signed URL.
+ */
+export const uploadUserProfilePhoto = asyncHandler(async (req, res) => {
+  if (!req.file?.location) throw new ApiError(400, 'No file uploaded');
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    { $set: { profilePhoto: req.file.location } },
+    { new: true }
+  ).select('-password -refreshToken');
+
+  if (!user) throw new ApiError(404, 'User not found');
+
+  res.status(200).json(
+    new ApiResponse(200, { fileSavedUrl: req.file.location, user }, 'Profile photo uploaded')
+  );
+});
