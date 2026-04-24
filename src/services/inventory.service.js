@@ -95,9 +95,12 @@ export const findConflictingHold = async ({ artistId, startUtc, endUtc, userId }
 
 /**
  * Union of HM intervals for a date across all calendar rows (all schedules).
- * Legacy `slots` on a row are converted to HM ranges then merged.
+ * In the unavailability model, entries in `calendarDays[].intervals` represent
+ * BLOCKED time windows (artist is NOT available). Legacy `slots` on a row are
+ * also treated as blocked ranges and converted to HM ranges then merged.
+ * An empty result means the artist has no blocks for that date (fully available).
  */
-const unionHmIntervalsForDateKey = (artist, dateKey) => {
+const unionBlockedHmIntervalsForDateKey = (artist, dateKey) => {
   const rows = (artist?.availability?.calendarDays || []).filter(
     (d) => String(d?.dateKey || '').trim() === dateKey
   );
@@ -124,8 +127,8 @@ const unionHmIntervalsForDateKey = (artist, dateKey) => {
   return mergeArtistDayIntervals(hmList.filter((x) => x.start && x.end));
 };
 
-const unionUtcIntervalsForDateKey = (artist, dateKey) => {
-  const mergedHm = unionHmIntervalsForDateKey(artist, dateKey);
+const unionBlockedUtcIntervalsForDateKey = (artist, dateKey) => {
+  const mergedHm = unionBlockedHmIntervalsForDateKey(artist, dateKey);
   const out = [];
   for (const iv of mergedHm) {
     if (iv.end === '24:00') {
@@ -139,8 +142,11 @@ const unionUtcIntervalsForDateKey = (artist, dateKey) => {
   return out;
 };
 
-/** A 3h product slot is bookable if it has non-empty intersection with the union of artist intervals (plan rule). */
-const slotOverlapsArtistIntervals = (slotStart, slotEnd, utcIntervals) => {
+/**
+ * A 3h product slot is considered blocked by the artist if it has a non-empty
+ * intersection with any of the artist's blocked UTC intervals.
+ */
+const slotOverlapsBlockedIntervals = (slotStart, slotEnd, utcIntervals) => {
   if (!slotStart || !slotEnd) return false;
   return utcIntervals.some(({ startUtc, endUtc }) =>
     intervalsOverlap(slotStart, slotEnd, startUtc, endUtc)
@@ -162,11 +168,8 @@ export const getArtistAvailabilityConflictMessage = (artist, dateInput, slot) =>
     return 'Invalid date or slot for availability check';
   }
 
-  const utcIntervals = unionUtcIntervalsForDateKey(artist, dateKey);
-  if (!utcIntervals.length) {
-    return `Artist is unavailable on ${dateKey}`;
-  }
-  if (!slotOverlapsArtistIntervals(startUtc, endUtc, utcIntervals)) {
+  const blockedUtcIntervals = unionBlockedUtcIntervalsForDateKey(artist, dateKey);
+  if (slotOverlapsBlockedIntervals(startUtc, endUtc, blockedUtcIntervals)) {
     return `Artist is unavailable for slot ${slot} on ${dateKey}`;
   }
   return '';
@@ -305,7 +308,13 @@ export const consumeHoldIfPresent = async ({ holdId, userId, artistId, dateInput
 };
 
 /**
- * Per-day slot map for green/red UI (availability vs occupancy).
+ * Per-day slot map for green/red UI.
+ *
+ * Unavailability model: each slot defaults to `free` unless:
+ *  - the artist's master `isAvailable` switch is off (state=unavailable, reason=artist_offline),
+ *  - the slot overlaps an artist-marked blocked interval (state=unavailable, reason=blocked_by_artist),
+ *  - there is an active booking on that slot (state=busy, reason=booked), or
+ *  - there is an active hold on that slot (state=busy, reason=held).
  */
 export const buildArtistCalendarPayload = async ({ artistId, from, to }) => {
   const artist = await Artist.findById(artistId).select('availability name category');
@@ -350,47 +359,56 @@ export const buildArtistCalendarPayload = async ({ artistId, from, to }) => {
   ]);
 
   const availability = artist.availability || {};
+  const artistOffline = availability.isAvailable === false;
 
   const days = [];
   const cursor = new Date(fromD.getFullYear(), fromD.getMonth(), fromD.getDate());
   const endCursor = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate());
   while (cursor <= endCursor) {
     const key = toDateKeyInIST(cursor);
-    const utcIntervals =
-      availability.isAvailable === false ? [] : unionUtcIntervalsForDateKey(artist, key);
+    const blockedUtcIntervals = artistOffline ? [] : unionBlockedUtcIntervalsForDateKey(artist, key);
 
     const slotsAvailable = [];
     const slotsStatus = {};
     for (const slot of BOOKING_SLOT_ENUM) {
       const { startUtc, endUtc } = getSlotIntervalUtc(`${key}T12:00:00+05:30`, slot);
-      const available = slotOverlapsArtistIntervals(startUtc, endUtc, utcIntervals);
-      if (available) slotsAvailable.push(slot);
-      let busyReason = null;
-      if (!available) {
-        busyReason = 'not_in_availability';
-      } else {
-        const bookingHit = bookings.some((b) => {
-          if (toDateKeyInIST(b.eventDetails?.date) !== key) return false;
-          let bStart = b.eventDetails?.startUtc ? new Date(b.eventDetails.startUtc) : null;
-          let bEnd = b.eventDetails?.endUtc ? new Date(b.eventDetails.endUtc) : null;
-          if (!bStart || !bEnd) {
-            const iv = getSlotIntervalUtc(b.eventDetails.date, b.eventDetails.slot);
-            bStart = iv.startUtc;
-            bEnd = iv.endUtc;
-          }
-          return bStart && bEnd && startUtc && endUtc && intervalsOverlap(startUtc, endUtc, bStart, bEnd);
-        });
-        const holdHit = holds.some((h) => {
-          if (toDateKeyInIST(h.startUtc) !== key) return false;
-          return startUtc && endUtc && intervalsOverlap(startUtc, endUtc, h.startUtc, h.endUtc);
-        });
-        if (bookingHit) busyReason = 'booked';
-        else if (holdHit) busyReason = 'held';
+
+      const bookingHit = bookings.some((b) => {
+        if (toDateKeyInIST(b.eventDetails?.date) !== key) return false;
+        let bStart = b.eventDetails?.startUtc ? new Date(b.eventDetails.startUtc) : null;
+        let bEnd = b.eventDetails?.endUtc ? new Date(b.eventDetails.endUtc) : null;
+        if (!bStart || !bEnd) {
+          const iv = getSlotIntervalUtc(b.eventDetails.date, b.eventDetails.slot);
+          bStart = iv.startUtc;
+          bEnd = iv.endUtc;
+        }
+        return bStart && bEnd && startUtc && endUtc && intervalsOverlap(startUtc, endUtc, bStart, bEnd);
+      });
+      const holdHit = holds.some((h) => {
+        if (toDateKeyInIST(h.startUtc) !== key) return false;
+        return startUtc && endUtc && intervalsOverlap(startUtc, endUtc, h.startUtc, h.endUtc);
+      });
+
+      const blockedByArtist = slotOverlapsBlockedIntervals(startUtc, endUtc, blockedUtcIntervals);
+
+      let state = 'free';
+      let reason = null;
+      if (artistOffline) {
+        state = 'unavailable';
+        reason = 'artist_offline';
+      } else if (blockedByArtist) {
+        state = 'unavailable';
+        reason = 'blocked_by_artist';
+      } else if (bookingHit) {
+        state = 'busy';
+        reason = 'booked';
+      } else if (holdHit) {
+        state = 'busy';
+        reason = 'held';
       }
-      slotsStatus[slot] = {
-        state: !available ? 'unavailable' : busyReason ? 'busy' : 'free',
-        reason: busyReason,
-      };
+
+      if (state === 'free') slotsAvailable.push(slot);
+      slotsStatus[slot] = { state, reason };
     }
 
     days.push({ dateKey: key, slotsAvailable, slotsStatus });

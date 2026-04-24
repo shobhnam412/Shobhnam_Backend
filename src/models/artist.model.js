@@ -83,11 +83,17 @@ const availabilityCalendarDaySchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    /**
+     * Unavailability model: intervals represent BLOCKED time windows for this
+     * dateKey (artist is NOT available during these intervals). When `enabled`
+     * is false, the entire row is ignored. Absence of a row for a date means
+     * the artist is fully available that day.
+     */
     intervals: {
       type: [availabilityIntervalSchema],
       default: [],
     },
-    /** @deprecated Prefer intervals; converted when read if intervals empty. */
+    /** @deprecated Prefer intervals; converted when read if intervals empty. Also treated as blocked ranges. */
     slots: [
       {
         type: String,
@@ -289,6 +295,12 @@ const artistSchema = new mongoose.Schema(
       default: 0,
     },
     availability: {
+      /**
+       * Master switch. `false` means the artist is unavailable for every date
+       * and slot (overrides calendarDays entirely). `true` (default) means the
+       * artist is available for every date/slot unless explicitly blocked via
+       * `calendarDays` entries below.
+       */
       isAvailable: {
         type: Boolean,
         default: true

@@ -260,6 +260,12 @@ const collectIntervalsFromCalendarRow = (row, enabled) => {
 
 /**
  * Calendar rows keyed by (scheduleId|dateKey); merges intervals on collision.
+ *
+ * Unavailability model: each row's `intervals` represent BLOCKED time windows
+ * for that dateKey (artist is NOT available during those intervals). An
+ * `enabled: false` row is ignored entirely and contributes no blocks. No rows
+ * for a date means the artist is fully available on that date.
+ *
  * @param {unknown[]} rows
  * @param {{ allowedServiceAddressIds: Set<string> }} ctx
  */
@@ -581,28 +587,19 @@ export const updateArtistProfile = asyncHandler(async (req, res) => {
       (Array.isArray(addrList) ? addrList : []).map((a) => String(a._id))
     );
 
-    const calendarHasIntervals = (cal) =>
-      Array.isArray(cal) &&
-      cal.some((row) => row.enabled && Array.isArray(row.intervals) && row.intervals.length > 0);
-
-    let hasAnySlot = false;
+    // Unavailability model: calendarDays[].intervals now represent BLOCKED
+    // time windows. Empty calendar = artist fully available. `isAvailable` is
+    // a master switch and is NOT derived from calendar content anymore.
     if (availability?.calendarDays !== undefined) {
       const normalizedCal = normalizeCalendarDays(availability.calendarDays, { allowedServiceAddressIds });
       updates.$set['availability.calendarDays'] = normalizedCal;
-      hasAnySlot = calendarHasIntervals(normalizedCal);
-    } else {
-      const existingCal = existingForAvailability?.availability?.calendarDays || [];
-      hasAnySlot = existingCal.some((row) => {
-        if (row?.enabled === false) return false;
-        if (Array.isArray(row?.intervals) && row.intervals.length) return true;
-        return Array.isArray(row?.slots) && row.slots.length > 0;
-      });
     }
 
     updates.$set['availability.schedules'] = nextSchedules;
     updates.$set['availability.selectedScheduleId'] = selectedScheduleId;
-    updates.$set['availability.isAvailable'] =
-      availability?.isAvailable !== undefined ? !!availability.isAvailable : hasAnySlot;
+    if (availability?.isAvailable !== undefined) {
+      updates.$set['availability.isAvailable'] = !!availability.isAvailable;
+    }
   } else if (isAvailable !== undefined) {
     updates.$set['availability.isAvailable'] = !!isAvailable;
   }
