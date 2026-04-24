@@ -12,15 +12,23 @@ export const getUserProfile = asyncHandler(async (req, res) => {
 });
 
 export const updateUserProfile = asyncHandler(async (req, res) => {
-  const { name, city } = req.body;
+  const { name, city, profilePhoto } = req.body;
   const updates = {};
 
-  if (name) updates.name = name;
-  if (city) updates.city = city;
+  if (typeof name === 'string' && name.trim()) updates.name = name.trim();
+  if (typeof city === 'string' && city.trim()) updates.city = city.trim();
   
   // If file was uploaded via S3 Multer
   if (req.file) {
     updates.profilePhoto = req.file.location;
+  }
+  // Fallback: allow direct profilePhoto URL string update from body.
+  else if (typeof profilePhoto === 'string' && profilePhoto.trim()) {
+    updates.profilePhoto = profilePhoto.trim();
+  }
+
+  if (Object.keys(updates).length === 0) {
+    throw new ApiError(400, 'No valid fields provided for update');
   }
 
   const updatedUser = await User.findByIdAndUpdate(
