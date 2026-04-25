@@ -171,9 +171,12 @@ export const createOrder = asyncHandler(async (req, res) => {
 });
 
 export const getUserOrders = asyncHandler(async (req, res) => {
-  const orders = await Order.find({ user: req.user._id }).sort({
-    createdAt: -1,
-  });
+  const orders = await Order.find({ user: req.user._id })
+    .populate("items.artist", "name category profilePhoto")
+    .populate("items.assignedArtists.artist", "name category profilePhoto")
+    .sort({
+      createdAt: -1,
+    });
 
   const projected = orders.map(withLifecycleProjection);
   res.status(200).json(new ApiResponse(200, projected, "User orders fetched"));

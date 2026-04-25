@@ -1108,6 +1108,41 @@ const syncLinkedBookingForOrderItem = async (order, itemIndex, assignedArtists) 
   await booking.save();
 };
 
+/**
+ * When an admin assigns/unassigns from the **booking** screen, the Order document is
+ * what the mobile app uses for order-based rows (ORDER_ITEM bookings are not returned
+ * from GET /bookings/user). Keep the matching order item in sync.
+ */
+const toPlainAssignedEntry = (entry) => {
+  if (!entry) return null;
+  const artistId = entry.artist?._id ?? entry.artist;
+  if (artistId == null || artistId === '') return null;
+  return {
+    artist: artistId,
+    assignedBy: entry.assignedBy?._id ?? entry.assignedBy,
+    assignedAt: entry.assignedAt,
+    source: entry.source,
+    note: entry.note,
+  };
+};
+
+const syncOrderItemFromLinkedBooking = async (booking) => {
+  if (!booking || booking.sourceType !== 'ORDER_ITEM') return;
+  const orderId = booking.sourceRef?.orderId;
+  const itemIndex = booking.sourceRef?.itemIndex;
+  if (!orderId || !Number.isInteger(itemIndex) || itemIndex < 0) return;
+
+  const order = await Order.findById(orderId);
+  if (!order?.items || itemIndex >= order.items.length) return;
+
+  const assignedArtists = (getBookingAssignedArtists(booking) || [])
+    .map(toPlainAssignedEntry)
+    .filter(Boolean);
+  syncOrderItemLegacyAssignmentFields(order.items[itemIndex], assignedArtists);
+  order.markModified('items');
+  await order.save();
+};
+
 export const getAllBookings = asyncHandler(async (req, res) => {
   const { page = 1, limit = 10, status, includeOrderLinked = 'false' } = req.query;
   const skip = (page - 1) * limit;
@@ -1216,6 +1251,7 @@ export const assignArtistToBooking = asyncHandler(async (req, res) => {
   }
 
   await booking.save();
+  await syncOrderItemFromLinkedBooking(booking);
   await booking.populate('artist', 'name phone category');
   await booking.populate('assignedArtists.artist', 'name phone category location');
 
@@ -1257,6 +1293,7 @@ export const unassignArtistFromBooking = asyncHandler(async (req, res) => {
   syncLegacyAssignmentFields(booking, updatedAssignedArtists);
 
   await booking.save();
+  await syncOrderItemFromLinkedBooking(booking);
   await booking.populate('artist', 'name phone category');
   await booking.populate('assignedArtists.artist', 'name phone category location');
 

@@ -252,6 +252,7 @@ export const getUserBookings = asyncHandler(async (req, res) => {
 
   const docs = await Booking.find(query)
     .populate('artist', 'name category profilePhoto pricing')
+    .populate('assignedArtists.artist', 'name category profilePhoto pricing')
     .sort({ createdAt: -1 });
 
   const bookings = docs.map(normalizeBookingStatusForClient);
