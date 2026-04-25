@@ -83,6 +83,13 @@ export const createAdminBroadcastNotification = asyncHandler(async (req, res) =>
     createdByAdmin: req.user?._id,
   });
 
+  if (!result?.insertedCount) {
+    console.warn('Admin broadcast created zero notifications', {
+      target: normalizedTarget,
+      adminId: req.user?._id ? String(req.user._id) : null,
+    });
+  }
+
   res.status(201).json(new ApiResponse(201, result, 'Broadcast notification sent successfully'));
 });
 

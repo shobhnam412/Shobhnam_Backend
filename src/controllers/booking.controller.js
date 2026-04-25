@@ -18,6 +18,7 @@ import {
   getArtistAvailabilityConflictMessage,
   releaseHoldById,
 } from '../services/inventory.service.js';
+import { createInAppNotification, NOTIFICATION_TYPE } from '../services/notification.service.js';
 import { getSlotIntervalUtc, toDateKeyInIST } from '../utils/istTime.js';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
@@ -211,6 +212,18 @@ export const createBooking = asyncHandler(async (req, res) => {
     inventoryCommitted: false,
   });
 
+  await createInAppNotification({
+    recipientType: 'USER',
+    recipientId: req.user._id,
+    type: NOTIFICATION_TYPE.SERVICE_BOOKED,
+    title: 'Service booked successfully',
+    message: 'Your booking request has been created. We will notify you when payment and assignment updates happen.',
+    meta: {
+      referenceDomain: 'BOOKING',
+      referenceId: newBooking._id,
+    },
+  });
+
   res.status(201).json(
     new ApiResponse(
       201,
@@ -269,6 +282,18 @@ export const completeBooking = asyncHandler(async (req, res) => {
   booking.status = BOOKING_STATUS.COMPLETED;
   booking.closedAt = new Date();
   await booking.save();
+
+  await createInAppNotification({
+    recipientType: 'USER',
+    recipientId: booking.user,
+    type: NOTIFICATION_TYPE.EVENT_COMPLETED,
+    title: 'Event completed',
+    message: 'Your booking has been marked as completed.',
+    meta: {
+      referenceDomain: 'BOOKING',
+      referenceId: booking._id,
+    },
+  });
 
   res.status(200).json(new ApiResponse(200, booking, 'Booking marked as completed'));
 });
@@ -426,6 +451,19 @@ export const completeBookingWithHappyCode = asyncHandler(async (req, res) => {
     };
     await booking.save();
   }
+
+  await createInAppNotification({
+    recipientType: 'USER',
+    recipientId: booking.user?._id || booking.user,
+    type: NOTIFICATION_TYPE.EVENT_COMPLETED,
+    title: 'Event completed',
+    message: 'Your event is completed successfully.',
+    meta: {
+      referenceDomain: 'BOOKING',
+      referenceId: booking._id,
+    },
+    dedupeBy: 'REFERENCE',
+  });
 
   res.status(200).json(new ApiResponse(200, normalizeBookingStatusForClient(booking), 'Booking completed successfully'));
 });

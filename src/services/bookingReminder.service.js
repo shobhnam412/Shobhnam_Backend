@@ -5,12 +5,20 @@ import {
   PAYMENT_STATUS,
   requiresFullPaymentByEventDate,
 } from '../utils/bookingLifecycle.js';
+import { createInAppNotification, NOTIFICATION_TYPE } from './notification.service.js';
 
 let bookingReminderTimer = null;
 
 const shouldMarkForManualReview = (booking) => {
   if (!booking?.eventDetails?.date) return false;
   return requiresFullPaymentByEventDate(booking.eventDetails.date);
+};
+
+const hasHighRemainingShare = ({ remainingAmount, totalAmount }) => {
+  const total = Number(totalAmount || 0);
+  if (total <= 0) return false;
+  const remaining = Number(remainingAmount || 0);
+  return remaining / total >= 0.8;
 };
 
 export const runBookingReminderSweep = async () => {
@@ -24,11 +32,31 @@ export const runBookingReminderSweep = async () => {
   if (!updates.length) return 0;
 
   await Promise.all(
-    updates.map((booking) => {
+    updates.map(async (booking) => {
       booking.status = BOOKING_STATUS.MANUAL_REVIEW;
       if (!booking.manualReviewAt) booking.manualReviewAt = new Date();
       if (!booking.reminderSentAt) booking.reminderSentAt = new Date();
-      return booking.save();
+      await booking.save();
+
+      const shouldNotify = hasHighRemainingShare({
+        remainingAmount: booking.remainingAmount,
+        totalAmount: booking.pricing?.agreedPrice,
+      });
+      if (!shouldNotify) return;
+
+      await createInAppNotification({
+        recipientType: 'USER',
+        recipientId: booking.user,
+        type: NOTIFICATION_TYPE.PAYMENT_REMINDER,
+        title: 'Payment reminder',
+        message: `Payment is pending for your booking. INR ${Number(booking.remainingAmount || 0).toFixed(2)} is still due.`,
+        meta: {
+          referenceDomain: 'BOOKING',
+          referenceId: booking._id,
+          reminderType: 'PENDING_PAYMENT_80_PERCENT',
+        },
+        dedupeBy: 'REFERENCE',
+      });
     })
   );
 
@@ -50,6 +78,26 @@ export const runBookingReminderSweep = async () => {
           updatedOrderItems += 1;
           hasUpdates = true;
         }
+
+        const shouldNotify = hasHighRemainingShare({
+          remainingAmount: item.remainingAmount,
+          totalAmount: item.price,
+        });
+        if (!shouldNotify) continue;
+
+        await createInAppNotification({
+          recipientType: 'USER',
+          recipientId: order.user,
+          type: NOTIFICATION_TYPE.PAYMENT_REMINDER,
+          title: 'Payment reminder',
+          message: `Payment is pending for one of your order items. INR ${Number(item.remainingAmount || 0).toFixed(2)} is still due.`,
+          meta: {
+            referenceDomain: 'ORDER_ITEM',
+            referenceId: `${order._id}:${String(item._id || '')}`,
+            reminderType: 'PENDING_PAYMENT_80_PERCENT',
+          },
+          dedupeBy: 'REFERENCE',
+        });
       }
       if (hasUpdates) {
         await order.save();

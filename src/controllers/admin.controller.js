@@ -21,7 +21,7 @@ import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { fulfillActivationPayment, fulfillBookingPayment, reconcileBookingPostPaymentSms } from '../services/paymentFulfillment.service.js';
-import { deactivatePaymentPendingNotifications } from '../services/notification.service.js';
+import { createInAppNotification, deactivatePaymentPendingNotifications, NOTIFICATION_TYPE } from '../services/notification.service.js';
 import {
   findConflictingBooking,
   getArtistAvailabilityConflictMessage,
@@ -408,6 +408,21 @@ export const reviewArtistBankVerification = asyncHandler(async (req, res) => {
   };
   await artist.save();
 
+  if (status === BANK_VERIFICATION_STATUS.VERIFIED) {
+    await createInAppNotification({
+      recipientType: 'ARTIST',
+      recipientId: artist._id,
+      type: NOTIFICATION_TYPE.BANK_VERIFIED,
+      title: 'Bank details verified',
+      message: 'Your bank details have been verified by admin.',
+      meta: {
+        referenceDomain: 'ARTIST_BANK',
+        referenceId: artist._id,
+      },
+      dedupeBy: 'REFERENCE',
+    });
+  }
+
   res.status(200).json(
     new ApiResponse(
       200,
@@ -546,6 +561,18 @@ export const reviewBookingPaymentVerification = asyncHandler(async (req, res) =>
       paymentDomain: request.targetType === 'BOOKING' ? 'BOOKING' : 'ORDER',
       referenceId: request.targetType === 'BOOKING' ? request.booking : request.order,
     });
+    await createInAppNotification({
+      recipientType: 'USER',
+      recipientId: request.user,
+      type: NOTIFICATION_TYPE.PAYMENT_CONFIRMED,
+      title: 'Payment confirmed',
+      message: 'Your payment has been verified and confirmed by admin.',
+      meta: {
+        referenceDomain: request.targetType === 'BOOKING' ? 'BOOKING' : 'ORDER',
+        referenceId: request.targetType === 'BOOKING' ? request.booking : request.order,
+      },
+      dedupeBy: 'REFERENCE',
+    });
 
     request.status = status;
     request.reviewedAt = new Date();
@@ -642,6 +669,18 @@ export const reviewActivationPaymentVerification = asyncHandler(async (req, res)
       recipientId: request.activationFor === 'ARTIST' ? request.artist : request.user,
       paymentDomain: 'ACTIVATION',
       referenceId: request.activationFor === 'ARTIST' ? request.artist : request.user,
+    });
+    await createInAppNotification({
+      recipientType: request.activationFor,
+      recipientId: request.activationFor === 'ARTIST' ? request.artist : request.user,
+      type: NOTIFICATION_TYPE.ACTIVATION_VERIFIED,
+      title: 'Activation verified',
+      message: 'Your activation charges have been verified by admin.',
+      meta: {
+        referenceDomain: 'ACTIVATION',
+        referenceId: request.activationFor === 'ARTIST' ? request.artist : request.user,
+      },
+      dedupeBy: 'REFERENCE',
     });
   }
 
@@ -1361,6 +1400,18 @@ export const assignArtistToBooking = asyncHandler(async (req, res) => {
   await booking.populate('assignedArtists.artist', 'name phone category location');
 
   await reconcileBookingPostPaymentSms(booking);
+  await createInAppNotification({
+    recipientType: 'ARTIST',
+    recipientId: artist._id,
+    type: NOTIFICATION_TYPE.EVENT_ASSIGNED,
+    title: 'New event assigned',
+    message: 'Admin has assigned an event to you.',
+    meta: {
+      referenceDomain: 'BOOKING',
+      referenceId: booking._id,
+    },
+    dedupeBy: 'REFERENCE',
+  });
 
   res.status(200).json(new ApiResponse(200, booking, 'Artist assigned to booking'));
 });
@@ -1511,6 +1562,7 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
   const assignedArtists = getOrderItemAssignedArtists(targetItem);
   const noteValue = note ? String(note).trim() : undefined;
   let addedCount = 0;
+  const addedArtistIds = [];
   const assignmentWarnings = [];
 
   if (!allowIncompleteArtistProfile) {
@@ -1565,6 +1617,7 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
       note: noteValue,
     });
     addedCount += 1;
+    addedArtistIds.push(artist._id);
   }
 
   if (!addedCount) {
@@ -1590,6 +1643,22 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
   await syncLinkedBookingForOrderItem(order, parsedItemIndex, assignedArtists);
   await order.populate('items.artist', 'name phone category');
   await order.populate('items.assignedArtists.artist', 'name phone category location');
+
+  await Promise.all(
+    addedArtistIds.map((artistId) =>
+      createInAppNotification({
+        recipientType: 'ARTIST',
+        recipientId: artistId,
+        type: NOTIFICATION_TYPE.EVENT_ASSIGNED,
+        title: 'New event assigned',
+        message: 'Admin has assigned an event package to you.',
+        meta: {
+          referenceDomain: 'ORDER_ITEM',
+          referenceId: `${order._id}:${parsedItemIndex}`,
+        },
+      })
+    )
+  );
 
   res.status(200).json(
     new ApiResponse(

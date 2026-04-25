@@ -11,6 +11,7 @@ import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ALL_BOOKING_SLOT_ENUM } from "../utils/istTime.js";
+import { createInAppNotification, NOTIFICATION_TYPE } from "../services/notification.service.js";
 
 const TRAVELING_FEE = 500;
 const ALLOWED_SLOTS = new Set(ALL_BOOKING_SLOT_ENUM);
@@ -210,6 +211,18 @@ export const createOrder = asyncHandler(async (req, res) => {
     amountPaid: 0,
     remainingAmount: grandTotal,
     bookedAt: new Date(),
+  });
+
+  await createInAppNotification({
+    recipientType: "USER",
+    recipientId: req.user._id,
+    type: NOTIFICATION_TYPE.SERVICE_BOOKED,
+    title: "Service booked successfully",
+    message: "Your order has been created successfully.",
+    meta: {
+      referenceDomain: "ORDER",
+      referenceId: order._id,
+    },
   });
 
   res

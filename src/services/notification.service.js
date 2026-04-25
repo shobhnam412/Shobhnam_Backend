@@ -6,6 +6,13 @@ export const NOTIFICATION_TYPE = {
   ADMIN_BROADCAST: 'ADMIN_BROADCAST',
   PAYMENT_PENDING: 'PAYMENT_PENDING',
   PAYMENT_CLEARED: 'PAYMENT_CLEARED',
+  SERVICE_BOOKED: 'SERVICE_BOOKED',
+  ACTIVATION_VERIFIED: 'ACTIVATION_VERIFIED',
+  PAYMENT_CONFIRMED: 'PAYMENT_CONFIRMED',
+  EVENT_ASSIGNED: 'EVENT_ASSIGNED',
+  EVENT_COMPLETED: 'EVENT_COMPLETED',
+  BANK_VERIFIED: 'BANK_VERIFIED',
+  PAYMENT_REMINDER: 'PAYMENT_REMINDER',
 };
 
 const toObjectIdString = (value) => String(value || '');
@@ -18,6 +25,24 @@ const buildPaymentPendingQuery = ({ recipientType, recipientId, paymentDomain, r
   ...(paymentDomain ? { 'meta.paymentDomain': paymentDomain } : {}),
   ...(referenceId ? { 'meta.referenceId': toObjectIdString(referenceId) } : {}),
 });
+
+const buildUniqueQuery = ({ recipientType, recipientId, type, dedupeBy, meta = {} }) => {
+  if (!dedupeBy) return null;
+  if (dedupeBy === 'REFERENCE') {
+    const referenceDomain = String(meta.referenceDomain || '').trim();
+    const referenceId = toObjectIdString(meta.referenceId);
+    if (!referenceDomain || !referenceId) return null;
+    return {
+      recipientType,
+      recipientId,
+      type,
+      isActive: true,
+      'meta.referenceDomain': referenceDomain,
+      'meta.referenceId': referenceId,
+    };
+  }
+  return null;
+};
 
 export const createPaymentPendingNotification = async ({
   recipientType,
@@ -64,6 +89,41 @@ export const deactivatePaymentPendingNotifications = async ({
     },
   });
   return result.modifiedCount || 0;
+};
+
+export const createInAppNotification = async ({
+  recipientType,
+  recipientId,
+  type,
+  title,
+  message,
+  meta = {},
+  dedupeBy = null,
+}) => {
+  const payload = {
+    recipientType,
+    recipientId,
+    type,
+    title,
+    message,
+    isActive: true,
+    isRead: false,
+    meta: {
+      ...meta,
+      referenceId: meta.referenceId ? toObjectIdString(meta.referenceId) : meta.referenceId,
+    },
+  };
+
+  const uniqueQuery = buildUniqueQuery({ recipientType, recipientId, type, dedupeBy, meta: payload.meta });
+  if (!uniqueQuery) {
+    return Notification.create(payload);
+  }
+
+  return Notification.findOneAndUpdate(
+    uniqueQuery,
+    { $set: payload },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 };
 
 const mapRecipients = async (target) => {
