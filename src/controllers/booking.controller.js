@@ -260,7 +260,8 @@ export const getUserBookings = asyncHandler(async (req, res) => {
 });
 
 export const getArtistBookings = asyncHandler(async (req, res) => {
-  const { includeOrderLinked = 'false' } = req.query;
+  /** Artists must see ORDER_ITEM linked bookings from cart/checkout; default includes all source types. */
+  const { includeOrderLinked = 'true' } = req.query;
   const docs = await Booking.find({
     ...(String(includeOrderLinked).toLowerCase() === 'true' ? {} : { sourceType: 'DIRECT_BOOKING' }),
     $or: [

@@ -58,6 +58,37 @@ const isArtistProfileComplete = (artist) =>
       String(artist?.aadharCard || '').trim()
   );
 
+/** Reasons an artist is not "fully active" for payouts / visibility; used when admin assigns. */
+const getArtistProfileAssignmentIssues = (artist) => {
+  const issues = [];
+  if (artist?.activationChargeStatus !== 'PAID') {
+    issues.push({
+      code: 'ACTIVATION_PENDING',
+      message: 'Activation fee has not been paid. This artist profile is not fully active.',
+    });
+  }
+  const bv = artist?.bankVerification?.status || BANK_VERIFICATION_STATUS.NOT_SUBMITTED;
+  if (bv !== BANK_VERIFICATION_STATUS.VERIFIED) {
+    if (bv === BANK_VERIFICATION_STATUS.PENDING) {
+      issues.push({
+        code: 'BANK_PENDING_REVIEW',
+        message: 'Bank details are awaiting admin verification.',
+      });
+    } else if (bv === BANK_VERIFICATION_STATUS.REJECTED) {
+      issues.push({
+        code: 'BANK_REJECTED',
+        message: 'Bank verification was rejected; the artist must resubmit bank details.',
+      });
+    } else {
+      issues.push({
+        code: 'BANK_NOT_SUBMITTED',
+        message: 'Bank details have not been submitted.',
+      });
+    }
+  }
+  return issues;
+};
+
 const buildOnboardingProgress = (artist) => {
   const complete = isArtistProfileComplete(artist);
   const verified = artist?.status === 'APPROVED';
@@ -1036,7 +1067,9 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
   const serviceFilterRaw = String(serviceType || serviceHint || '').trim();
 
   const artists = await Artist.find({ status: 'APPROVED' })
-    .select('name phone email category location availability serviceAddresses profilePhoto')
+    .select(
+      'name phone email category location availability serviceAddresses profilePhoto activationChargeStatus bankVerification.status'
+    )
     .lean();
 
   const checks = await Promise.all(
@@ -1057,6 +1090,7 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
       if (conflict) {
         return null;
       }
+      const profileIssues = getArtistProfileAssignmentIssues(artist);
       return {
         _id: artist._id,
         name: artist.name,
@@ -1066,6 +1100,7 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
         location: artist.location,
         serviceAddresses: artist.serviceAddresses || [],
         profilePhoto: artist.profilePhoto,
+        profileIssues,
       };
     }),
   );
@@ -1244,7 +1279,7 @@ export const getBookingById = asyncHandler(async (req, res) => {
 
 export const assignArtistToBooking = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { artistId, note, forceAssign = false } = req.body;
+  const { artistId, note, forceAssign = false, allowIncompleteArtistProfile = false } = req.body;
 
   if (!artistId) throw new ApiError(400, 'artistId is required');
 
@@ -1257,6 +1292,22 @@ export const assignArtistToBooking = asyncHandler(async (req, res) => {
   if (!artist) throw new ApiError(404, 'Artist not found');
   if (artist.status !== 'APPROVED') {
     throw new ApiError(400, 'Only approved artists can be assigned');
+  }
+
+  const profileIssues = getArtistProfileAssignmentIssues(artist);
+  if (profileIssues.length && !allowIncompleteArtistProfile) {
+    throw new ApiError(
+      422,
+      "This artist's profile is not fully active (activation and/or bank verification). Confirm to assign anyway.",
+      [
+        {
+          type: 'ARTIST_PROFILE_INCOMPLETE',
+          artistId: artist._id,
+          artistName: artist.name || 'Artist',
+          issues: profileIssues,
+        },
+      ]
+    );
   }
 
   const availabilityConflict = getArtistAvailabilityConflictMessage(
@@ -1444,7 +1495,7 @@ export const deleteOrderByAdmin = asyncHandler(async (req, res) => {
 
 export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
   const { id, itemIndex } = req.params;
-  const { artistId, artistIds, note, forceAssign = false } = req.body;
+  const { artistId, artistIds, note, forceAssign = false, allowIncompleteArtistProfile = false } = req.body;
   const incomingArtistIds = [artistId, ...(Array.isArray(artistIds) ? artistIds : [])]
     .filter(Boolean)
     .map((value) => String(value));
@@ -1476,6 +1527,30 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
   const noteValue = note ? String(note).trim() : undefined;
   let addedCount = 0;
   const assignmentWarnings = [];
+
+  if (!allowIncompleteArtistProfile) {
+    const profileErrors = [];
+    for (const artist of artists) {
+      const alreadyAssigned = assignedArtists.some((entry) => isSameId(entry.artist, artist._id));
+      if (alreadyAssigned) continue;
+      const issues = getArtistProfileAssignmentIssues(artist);
+      if (issues.length) {
+        profileErrors.push({
+          type: 'ARTIST_PROFILE_INCOMPLETE',
+          artistId: artist._id,
+          artistName: artist.name || 'Artist',
+          issues,
+        });
+      }
+    }
+    if (profileErrors.length) {
+      throw new ApiError(
+        422,
+        'One or more selected artists have an incomplete profile (activation and/or bank verification). Confirm to assign anyway.',
+        profileErrors
+      );
+    }
+  }
 
   for (const artist of artists) {
     const alreadyAssigned = assignedArtists.some((entry) => isSameId(entry.artist, artist._id));
