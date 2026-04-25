@@ -3,7 +3,7 @@ import { Booking } from '../models/booking.model.js';
 import { Order } from '../models/order.model.js';
 import { Payment } from '../models/payment.model.js';
 import { User } from '../models/user.model.js';
-import { sendBookingConfirmed } from './fast2sms.service.js';
+import { sendArtistAssigned, sendBookingConfirmed } from './fast2sms.service.js';
 import {
   BOOKING_STATUS,
   PAYMENT_PLAN,
@@ -28,17 +28,20 @@ const formatAddress = (location = {}) =>
     .filter(Boolean)
     .join(', ');
 
-const sendBookingConfirmedSmsIfEligible = async (booking) => {
+const hasAssignedArtists = (booking) => {
+  if (Array.isArray(booking?.assignedArtists) && booking.assignedArtists.length > 0) return true;
+  return Boolean(booking?.artist);
+};
+
+const sendBookingConfirmedSmsIfEligible = async ({ booking, userPhone }) => {
   if (!booking) return;
   if (booking.smsNotifications?.bookingConfirmedSentAt) return;
   if (booking.paymentStatus !== PAYMENT_STATUS.PAID) return;
   if (![BOOKING_STATUS.UPCOMING, BOOKING_STATUS.CONFIRMED].includes(booking.status)) return;
-
-  const user = await User.findById(booking.user).select('phone');
-  if (!user?.phone) return;
+  if (!userPhone) return;
 
   await sendBookingConfirmed({
-    phone: user.phone,
+    phone: userPhone,
     orderId: String(booking._id),
     packageName: String(booking?.eventDetails?.type || 'Service Package'),
     dateTime: formatBookingDateTime(booking.eventDetails),
@@ -50,7 +53,45 @@ const sendBookingConfirmedSmsIfEligible = async (booking) => {
     ...(booking.smsNotifications || {}),
     bookingConfirmedSentAt: new Date(),
   };
-  await booking.save();
+};
+
+const sendArtistAssignedSmsIfEligible = async ({ booking, userPhone }) => {
+  if (!booking) return;
+  if (booking.smsNotifications?.artistAssignedSentAt) return;
+  if (booking.paymentStatus !== PAYMENT_STATUS.PAID) return;
+  if (!hasAssignedArtists(booking)) return;
+  if (!booking.happyCode) return;
+  if (!userPhone) return;
+
+  await sendArtistAssigned({
+    phone: userPhone,
+    orderId: String(booking._id),
+    happyCode: String(booking.happyCode),
+  });
+
+  booking.smsNotifications = {
+    ...(booking.smsNotifications || {}),
+    artistAssignedSentAt: new Date(),
+  };
+};
+
+export const reconcileBookingPostPaymentSms = async (bookingInput) => {
+  const booking = bookingInput?._id ? bookingInput : null;
+  if (!booking) return bookingInput;
+
+  if (booking.paymentStatus !== PAYMENT_STATUS.PAID) return booking;
+
+  const user = await User.findById(booking.user).select('phone');
+  const userPhone = user?.phone;
+  if (!userPhone) return booking;
+
+  await sendBookingConfirmedSmsIfEligible({ booking, userPhone });
+  await sendArtistAssignedSmsIfEligible({ booking, userPhone });
+
+  if (booking.isModified('smsNotifications')) {
+    await booking.save();
+  }
+  return booking;
 };
 
 export const fulfillActivationPayment = async ({ activationFor, userId, artistId, amount, requestId }) => {
@@ -145,7 +186,7 @@ const applyOnBooking = async ({ bookingId, amount, paymentType, requestId }) => 
 
   booking.paymentId = payment._id;
   await booking.save();
-  await sendBookingConfirmedSmsIfEligible(booking);
+  await reconcileBookingPostPaymentSms(booking);
 
   return booking;
 };
@@ -218,6 +259,7 @@ const applyOnOrder = async ({ orderId, amount, paymentType, requestId }) => {
         linkedBooking.happyCodeGeneratedAt = item.happyCodeGeneratedAt || linkedBooking.happyCodeGeneratedAt || new Date();
       }
       await linkedBooking.save();
+      await reconcileBookingPostPaymentSms(linkedBooking);
     })
   );
 

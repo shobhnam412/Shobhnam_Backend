@@ -20,9 +20,8 @@ import mongoose from 'mongoose';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { fulfillActivationPayment, fulfillBookingPayment } from '../services/paymentFulfillment.service.js';
+import { fulfillActivationPayment, fulfillBookingPayment, reconcileBookingPostPaymentSms } from '../services/paymentFulfillment.service.js';
 import { deactivatePaymentPendingNotifications } from '../services/notification.service.js';
-import { sendArtistAssigned } from '../services/fast2sms.service.js';
 import {
   findConflictingBooking,
   getArtistAvailabilityConflictMessage,
@@ -1361,21 +1360,7 @@ export const assignArtistToBooking = asyncHandler(async (req, res) => {
   await booking.populate('artist', 'name phone category');
   await booking.populate('assignedArtists.artist', 'name phone category location');
 
-  if (!booking.smsNotifications?.artistAssignedSentAt && booking.happyCode) {
-    const user = await User.findById(booking.user).select('phone');
-    if (user?.phone) {
-      await sendArtistAssigned({
-        phone: user.phone,
-        orderId: String(booking._id),
-        happyCode: String(booking.happyCode),
-      });
-      booking.smsNotifications = {
-        ...(booking.smsNotifications || {}),
-        artistAssignedSentAt: new Date(),
-      };
-      await booking.save();
-    }
-  }
+  await reconcileBookingPostPaymentSms(booking);
 
   res.status(200).json(new ApiResponse(200, booking, 'Artist assigned to booking'));
 });
