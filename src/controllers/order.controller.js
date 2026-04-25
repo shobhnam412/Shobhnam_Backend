@@ -1,4 +1,5 @@
 import { Address } from "../models/address.model.js";
+import { Booking } from "../models/booking.model.js";
 import { Order } from "../models/order.model.js";
 import { User } from "../models/user.model.js";
 import {
@@ -45,6 +46,61 @@ const withLifecycleProjection = (order) => {
     paymentStatusLabel:
       data.paymentStatus === 'PAID' && data.paymentPlan === 'PARTIAL' ? 'PARTIALLY_PAID' : data.paymentStatus,
   };
+};
+
+const reconcileOrderItemsFromLinkedBookings = async (orders = []) => {
+  if (!Array.isArray(orders) || orders.length === 0) return;
+
+  const orderIds = orders
+    .map((order) => order?._id)
+    .filter(Boolean);
+  if (!orderIds.length) return;
+
+  const linkedBookings = await Booking.find({
+    sourceType: "ORDER_ITEM",
+    "sourceRef.orderId": { $in: orderIds },
+  }).select("sourceRef status ongoingAt closedAt happyCodeVerifiedAt");
+
+  if (!linkedBookings.length) return;
+
+  const bookingStatusByOrderItem = new Map();
+  linkedBookings.forEach((booking) => {
+    const orderId = booking?.sourceRef?.orderId ? String(booking.sourceRef.orderId) : "";
+    const itemIndex = booking?.sourceRef?.itemIndex;
+    if (!orderId || !Number.isInteger(itemIndex) || itemIndex < 0) return;
+    bookingStatusByOrderItem.set(`${orderId}:${itemIndex}`, booking);
+  });
+
+  for (const order of orders) {
+    if (!Array.isArray(order?.items) || !order.items.length) continue;
+    let changed = false;
+
+    order.items.forEach((item, index) => {
+      const key = `${String(order._id)}:${index}`;
+      const linkedBooking = bookingStatusByOrderItem.get(key);
+      if (!linkedBooking) return;
+
+      const linkedStatus = String(linkedBooking.status || "").toUpperCase();
+      if (!linkedStatus) return;
+
+      const syncableStatuses = new Set(["ONGOING", "COMPLETED", "CANCELLED"]);
+      if (!syncableStatuses.has(linkedStatus)) return;
+      if (item.status === linkedStatus) return;
+
+      item.status = linkedStatus;
+      if (linkedBooking.ongoingAt) item.ongoingAt = linkedBooking.ongoingAt;
+      if (linkedBooking.closedAt) item.closedAt = linkedBooking.closedAt;
+      if (linkedBooking.happyCodeVerifiedAt) {
+        item.happyCodeVerifiedAt = linkedBooking.happyCodeVerifiedAt;
+      }
+      changed = true;
+    });
+
+    if (changed) {
+      order.markModified("items");
+      await order.save();
+    }
+  }
 };
 
 export const createOrder = asyncHandler(async (req, res) => {
@@ -178,6 +234,7 @@ export const getUserOrders = asyncHandler(async (req, res) => {
       createdAt: -1,
     });
 
+  await reconcileOrderItemsFromLinkedBookings(orders);
   const projected = orders.map(withLifecycleProjection);
   res.status(200).json(new ApiResponse(200, projected, "User orders fetched"));
 });
