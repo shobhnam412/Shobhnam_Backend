@@ -448,6 +448,7 @@ export const adminLogin = asyncHandler(async (req, res) => {
     name: admin.name,
     email: admin.email,
     role: admin.role,
+    profilePhoto: admin.profilePhoto || null,
   };
 
   return res

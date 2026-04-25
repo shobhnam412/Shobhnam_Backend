@@ -966,12 +966,60 @@ export const getArtistCalendarForAdmin = asyncHandler(async (req, res) => {
   res.status(200).json(new ApiResponse(200, payload, 'Artist calendar loaded'));
 });
 
+const normalizeServiceHint = (value) =>
+  String(value || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+/**
+ * When `serviceHint` is non-empty, only artists whose profile category matches the
+ * booked service (e.g. "Bhagwat" / "Bhagwat Katha" → artist category Bhagwat Katha).
+ */
+const artistMatchesServiceHint = (artistCategory, serviceHint) => {
+  const hint = normalizeServiceHint(serviceHint);
+  if (!hint) return true;
+
+  const catRaw = String(artistCategory || '').trim();
+  if (!catRaw) return false;
+
+  const cat = normalizeServiceHint(catRaw);
+  if (!cat) return false;
+
+  if (cat === hint) return true;
+  if (cat.includes(hint) || hint.includes(cat)) return true;
+
+  const synonymRows = [
+    { hints: ['bhagwat', 'bhagwata'], cats: ['bhagwat katha', 'bhagwat khatha'] },
+    { hints: ['sunder', 'sundar', 'sundarkand'], cats: ['sunderkand', 'sundarkand'] },
+    { hints: ['ramleela', 'ramlila'], cats: ['ramleela'] },
+    { hints: ['bhajan'], cats: ['bhajan sandhya'] },
+    { hints: ['rudra'], cats: ['rudrabhishek'] },
+    { hints: ['ramayan'], cats: ['ramayan path'] },
+    { hints: ['other'], cats: ['other'] },
+  ];
+
+  for (const row of synonymRows) {
+    if (!row.hints.some((h) => hint.includes(h))) continue;
+    if (row.cats.some((c) => cat.includes(c) || c.includes(cat))) return true;
+  }
+
+  const hintParts = hint.split(' ').filter((t) => t.length >= 3);
+  for (const part of hintParts) {
+    if (cat.includes(part)) return true;
+  }
+  return false;
+};
+
 /**
  * Approved artists free for a single event date + slot (same rules as assign-artist).
- * Query: date (ISO), slot, excludeBookingId (optional — excludes that booking from overlap checks).
+ * Query: date (ISO), slot, excludeBookingId (optional — excludes that booking from overlap checks),
+ * serviceType (optional — narrows to artists whose category matches the booked service label).
  */
 export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
-  const { date, slot, excludeBookingId } = req.query;
+  const { date, slot, excludeBookingId, serviceType, serviceHint } = req.query;
   if (!date || !slot) {
     throw new ApiError(400, 'Query params date and slot are required');
   }
@@ -985,12 +1033,17 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
       ? new mongoose.Types.ObjectId(String(excludeBookingId))
       : undefined;
 
+  const serviceFilterRaw = String(serviceType || serviceHint || '').trim();
+
   const artists = await Artist.find({ status: 'APPROVED' })
-    .select('name phone email category location availability serviceAddresses')
+    .select('name phone email category location availability serviceAddresses profilePhoto')
     .lean();
 
   const checks = await Promise.all(
     artists.map(async (artist) => {
+      if (!artistMatchesServiceHint(artist.category, serviceFilterRaw)) {
+        return null;
+      }
       const availabilityMsg = getArtistAvailabilityConflictMessage(artist, dateObj, String(slot));
       if (availabilityMsg) {
         return null;
@@ -1012,6 +1065,7 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
         category: artist.category,
         location: artist.location,
         serviceAddresses: artist.serviceAddresses || [],
+        profilePhoto: artist.profilePhoto,
       };
     }),
   );
@@ -1025,6 +1079,7 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
         artists: available,
         date: dateObj.toISOString(),
         slot: String(slot),
+        serviceTypeFilter: serviceFilterRaw || null,
       },
       'Artists available for slot',
     ),
