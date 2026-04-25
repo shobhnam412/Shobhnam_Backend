@@ -42,7 +42,8 @@ const envSchema = z.object({
   ADMIN_EMAIL: z.string().email('Valid Admin Email is required'),
   ADMIN_PASSWORD: z.string().min(6, 'Admin Password must be at least 6 characters'),
 
-  CLIENT_URL: z.string().url().default('http://localhost:5173'),
+  /** Comma-separated list of allowed browser origins (CORS). Example: http://localhost:5173,https://admin.vercel.app */
+  CLIENT_URL: z.string().default('http://localhost:5173'),
 });
 
 const _env = envSchema.safeParse(process.env);
@@ -52,4 +53,15 @@ if (!_env.success) {
   process.exit(1);
 }
 
-export const env = _env.data;
+const clientUrlsRaw = _env.data.CLIENT_URL.split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const originsCheck = z.array(z.string().url()).min(1).safeParse(clientUrlsRaw);
+if (!originsCheck.success) {
+  console.error('❌ CLIENT_URL must be one or more comma-separated valid URLs (e.g. http://localhost:5173,https://app.vercel.app)');
+  console.error(originsCheck.error.format());
+  process.exit(1);
+}
+
+export const env = { ..._env.data, clientUrls: originsCheck.data };

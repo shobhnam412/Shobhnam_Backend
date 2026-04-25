@@ -26,10 +26,20 @@ startBookingReminderWorker();
 
 // --- Global Middlewares ---
 app.use(helmet());
-app.use(cors({
-  origin: env.NODE_ENV === 'development' ? true : (env.CLIENT_URL || '*'),
-  credentials: true,
-}));
+app.use(
+  cors(
+    env.NODE_ENV === 'development'
+      ? { origin: true, credentials: true }
+      : {
+          credentials: true,
+          origin(origin, callback) {
+            if (!origin) return callback(null, true);
+            if (env.clientUrls.includes(origin)) return callback(null, true);
+            callback(null, false);
+          },
+        }
+  )
+);
 
 app.use(express.json({ limit: '16kb' }));
 app.use(express.urlencoded({ extended: true, limit: '16kb' }));
