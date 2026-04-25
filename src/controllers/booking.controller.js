@@ -1,5 +1,6 @@
 import { Artist } from '../models/artist.model.js';
 import { Booking } from '../models/booking.model.js';
+import { Order } from '../models/order.model.js';
 import { User } from '../models/user.model.js';
 import { sendServiceCompleted } from '../services/fast2sms.service.js';
 import {
@@ -29,6 +30,35 @@ const normalizeBookingStatusForClient = (booking) => {
     normalized.status = normalized.paymentStatus === PAYMENT_STATUS.PAID ? BOOKING_STATUS.UPCOMING : BOOKING_STATUS.CONFIRMED;
   }
   return normalized;
+};
+
+const syncOrderItemStatusFromLinkedBooking = async ({ bookingId, status, timestamps = {} }) => {
+  if (!bookingId || !status) return;
+
+  const booking = await Booking.findById(bookingId).select('sourceType sourceRef');
+  if (!booking || booking.sourceType !== 'ORDER_ITEM') return;
+
+  const orderId = booking.sourceRef?.orderId;
+  const itemIndex = booking.sourceRef?.itemIndex;
+  if (!orderId || !Number.isInteger(itemIndex) || itemIndex < 0) return;
+
+  const order = await Order.findById(orderId);
+  if (!order?.items || itemIndex >= order.items.length) return;
+
+  const orderItem = order.items[itemIndex];
+  orderItem.status = status;
+  if (timestamps.ongoingAt) {
+    orderItem.ongoingAt = timestamps.ongoingAt;
+  }
+  if (timestamps.closedAt) {
+    orderItem.closedAt = timestamps.closedAt;
+  }
+  if (timestamps.happyCodeVerifiedAt) {
+    orderItem.happyCodeVerifiedAt = timestamps.happyCodeVerifiedAt;
+  }
+
+  order.markModified('items');
+  await order.save();
 };
 
 export const createBookingHold = asyncHandler(async (req, res) => {
@@ -338,6 +368,13 @@ export const markBookingOngoing = asyncHandler(async (req, res) => {
     requestedByArtistAt: new Date(),
   };
   await booking.save();
+  await syncOrderItemStatusFromLinkedBooking({
+    bookingId: booking._id,
+    status: BOOKING_STATUS.ONGOING,
+    timestamps: {
+      ongoingAt: booking.ongoingAt,
+    },
+  });
   res.status(200).json(new ApiResponse(200, normalizeBookingStatusForClient(booking), 'Booking marked as ongoing'));
 });
 
@@ -369,6 +406,14 @@ export const completeBookingWithHappyCode = asyncHandler(async (req, res) => {
     closedByRole: 'ARTIST',
   };
   await booking.save();
+  await syncOrderItemStatusFromLinkedBooking({
+    bookingId: booking._id,
+    status: BOOKING_STATUS.COMPLETED,
+    timestamps: {
+      closedAt: booking.closedAt,
+      happyCodeVerifiedAt: booking.happyCodeVerifiedAt,
+    },
+  });
 
   if (!booking.smsNotifications?.serviceCompletedSentAt && booking.user?.phone) {
     await sendServiceCompleted({
