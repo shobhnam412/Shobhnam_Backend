@@ -1161,7 +1161,7 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
 
 const syncLinkedBookingForOrderItem = async (order, itemIndex, assignedArtists) => {
   const orderItem = order.items[itemIndex];
-  if (!orderItem) return;
+  if (!orderItem) return null;
 
   const linkedBooking = await Booking.findOne({
     sourceType: 'ORDER_ITEM',
@@ -1170,13 +1170,13 @@ const syncLinkedBookingForOrderItem = async (order, itemIndex, assignedArtists) 
   });
 
   if (!assignedArtists.length) {
-    if (!linkedBooking) return;
+    if (!linkedBooking) return null;
     syncLegacyAssignmentFields(linkedBooking, []);
     if (linkedBooking.status === 'PENDING' || linkedBooking.status === 'CONFIRMED') {
       linkedBooking.status = 'CANCELLED';
     }
     await linkedBooking.save();
-    return;
+    return linkedBooking;
   }
 
   const bookingData = {
@@ -1234,6 +1234,7 @@ const syncLinkedBookingForOrderItem = async (order, itemIndex, assignedArtists) 
     booking.happyCodeGeneratedAt = orderItem.happyCodeGeneratedAt || booking.happyCodeGeneratedAt || new Date();
   }
   await booking.save();
+  return booking;
 };
 
 /**
@@ -1641,7 +1642,10 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
   ensureOrderItemHappyCode(targetItem);
 
   await order.save();
-  await syncLinkedBookingForOrderItem(order, parsedItemIndex, assignedArtists);
+  const linkedBooking = await syncLinkedBookingForOrderItem(order, parsedItemIndex, assignedArtists);
+  if (linkedBooking) {
+    await reconcileBookingPostPaymentSms(linkedBooking);
+  }
   await order.populate('items.artist', 'name phone category');
   await order.populate('items.assignedArtists.artist', 'name phone category location');
 

@@ -37,7 +37,6 @@ const sendBookingConfirmedSmsIfEligible = async ({ booking, userPhone }) => {
   if (!booking) return;
   if (booking.smsNotifications?.bookingConfirmedSentAt) return;
   if (booking.paymentStatus !== PAYMENT_STATUS.PAID) return;
-  if (![BOOKING_STATUS.UPCOMING, BOOKING_STATUS.CONFIRMED].includes(booking.status)) return;
   if (!userPhone) return;
 
   await sendBookingConfirmed({
