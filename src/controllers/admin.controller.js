@@ -1317,7 +1317,7 @@ export const getBookingById = asyncHandler(async (req, res) => {
 
 export const assignArtistToBooking = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { artistId, note, forceAssign = false, allowIncompleteArtistProfile = false } = req.body;
+  const { artistId, note, allowIncompleteArtistProfile = false } = req.body;
 
   if (!artistId) throw new ApiError(400, 'artistId is required');
 
@@ -1359,11 +1359,11 @@ export const assignArtistToBooking = asyncHandler(async (req, res) => {
     slot: booking?.eventDetails?.slot,
     excludeBookingId: booking._id,
   });
-  if (!forceAssign && (availabilityConflict || bookingConflict)) {
+  if (availabilityConflict || bookingConflict) {
     const conflictMessage = availabilityConflict || 'Artist already has another booking for this date and slot';
     throw new ApiError(
       409,
-      `${conflictMessage}. This assignment can continue only with forceAssign=true.`,
+      conflictMessage,
       [
         {
           type: 'ASSIGNMENT_CONFLICT',
@@ -1531,7 +1531,7 @@ export const deleteOrderByAdmin = asyncHandler(async (req, res) => {
 
 export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
   const { id, itemIndex } = req.params;
-  const { artistId, artistIds, note, forceAssign = false, allowIncompleteArtistProfile = false } = req.body;
+  const { artistId, artistIds, note, allowIncompleteArtistProfile = false } = req.body;
   const incomingArtistIds = [artistId, ...(Array.isArray(artistIds) ? artistIds : [])]
     .filter(Boolean)
     .map((value) => String(value));
@@ -1601,12 +1601,13 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
     });
     if (availabilityConflict || bookingConflict) {
       assignmentWarnings.push({
+        type: 'ASSIGNMENT_CONFLICT',
         artistId: artist._id,
         artistName: artist.name || 'Artist',
         conflictMessage: availabilityConflict || 'Artist already has another booking for this date and slot',
         conflictingBookingId: bookingConflict?._id || null,
       });
-      if (!forceAssign) continue;
+      continue;
     }
 
     assignedArtists.push({
@@ -1622,10 +1623,10 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
 
   if (!addedCount) {
     const hasWarnings = assignmentWarnings.length > 0;
-    if (hasWarnings && !forceAssign) {
+    if (hasWarnings) {
       throw new ApiError(
         409,
-        'One or more selected artists have availability conflicts. Retry with forceAssign=true to override.',
+        'One or more selected artists have availability conflicts.',
         assignmentWarnings
       );
     }

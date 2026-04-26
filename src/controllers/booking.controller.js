@@ -12,6 +12,7 @@ import {
 } from '../utils/bookingLifecycle.js';
 import {
   assertInventoryAvailable,
+  buildArtistsCalendarIntersectionPayload,
   consumeHoldIfPresent,
   createActiveHold,
   findConflictingBooking,
@@ -83,6 +84,29 @@ export const createBookingHold = asyncHandler(async (req, res) => {
       'Slot reserved temporarily'
     )
   );
+});
+
+export const getArtistsCalendarIntersection = asyncHandler(async (req, res) => {
+  const { artistIds = '', from, to } = req.query;
+  const parsedArtistIds = String(artistIds)
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (!parsedArtistIds.length) {
+    throw new ApiError(400, 'artistIds query param is required');
+  }
+  if (!from || !to) {
+    throw new ApiError(400, 'from and to query params are required (ISO date strings)');
+  }
+
+  const payload = await buildArtistsCalendarIntersectionPayload({
+    artistIds: parsedArtistIds,
+    from,
+    to,
+  });
+
+  res.status(200).json(new ApiResponse(200, payload, 'Artists calendar intersection loaded'));
 });
 
 export const deleteBookingHold = asyncHandler(async (req, res) => {

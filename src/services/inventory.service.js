@@ -423,3 +423,51 @@ export const buildArtistCalendarPayload = async ({ artistId, from, to }) => {
     days,
   };
 };
+
+export const buildArtistsCalendarIntersectionPayload = async ({ artistIds, from, to }) => {
+  const normalizedIds = [...new Set((Array.isArray(artistIds) ? artistIds : []).map((id) => String(id).trim()).filter(Boolean))];
+  if (!normalizedIds.length) {
+    throw new ApiError(400, 'artistIds is required');
+  }
+
+  const artistCalendars = await Promise.all(
+    normalizedIds.map((artistId) => buildArtistCalendarPayload({ artistId, from, to }))
+  );
+
+  const dayKeySet = new Set();
+  for (const calendar of artistCalendars) {
+    for (const day of calendar.days || []) {
+      if (day?.dateKey) dayKeySet.add(day.dateKey);
+    }
+  }
+
+  const sortedDayKeys = [...dayKeySet].sort();
+  const days = sortedDayKeys.map((dateKey) => {
+    const slotsStatus = {};
+    const slotsAvailable = [];
+
+    for (const slot of BOOKING_SLOT_ENUM) {
+      const slotStates = artistCalendars.map((calendar) => calendar.days?.find((day) => day.dateKey === dateKey)?.slotsStatus?.[slot]);
+      const isEveryArtistFree = slotStates.every((entry) => entry?.state === 'free');
+
+      if (isEveryArtistFree) {
+        slotsStatus[slot] = { state: 'free', reason: null };
+        slotsAvailable.push(slot);
+        continue;
+      }
+
+      const hasBusy = slotStates.some((entry) => entry?.state === 'busy');
+      slotsStatus[slot] = { state: hasBusy ? 'busy' : 'unavailable', reason: 'artist_intersection_blocked' };
+    }
+
+    return { dateKey, slotsAvailable, slotsStatus };
+  });
+
+  return {
+    artistIds: normalizedIds,
+    from: new Date(from).toISOString(),
+    to: new Date(to).toISOString(),
+    isAvailable: days.some((day) => (day.slotsAvailable || []).length > 0),
+    days,
+  };
+};

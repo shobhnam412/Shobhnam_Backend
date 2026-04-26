@@ -5,6 +5,7 @@ import {
     createBooking,
     createBookingHold,
     deleteBookingHold,
+    getArtistsCalendarIntersection,
     getAllBookingsAdmin,
     getArtistBookings,
     getUserBookings,
@@ -21,6 +22,7 @@ router.use(verifyJWT);
 // User specific routes
 router.post('/holds', authorizeRoles('USER'), createBookingHold);
 router.delete('/holds/:holdId', authorizeRoles('USER'), deleteBookingHold);
+router.get('/calendar/intersection', authorizeRoles('USER'), getArtistsCalendarIntersection);
 router.post('/request', authorizeRoles('USER'), createBooking);
 router.get('/user', authorizeRoles('USER'), getUserBookings);
 router.patch('/:id/complete', authorizeRoles('USER'), completeBooking);
