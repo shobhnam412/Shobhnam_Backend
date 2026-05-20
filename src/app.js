@@ -7,7 +7,6 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { startBookingReminderWorker } from './services/bookingReminder.service.js';
 import { ApiError } from './utils/ApiError.js';
 
-
 import adminRouter from './routes/admin.routes.js';
 import addressRouter from './routes/address.routes.js';
 import artistRouter from './routes/artist.routes.js';
