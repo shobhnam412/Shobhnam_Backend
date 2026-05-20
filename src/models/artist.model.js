@@ -184,6 +184,10 @@ const artistSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    serviceDescription: {
+      type: String,
+      trim: true,
+    },
     aadharCard: {
       type: String, // S3 URL
     },

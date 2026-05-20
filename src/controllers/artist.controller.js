@@ -9,6 +9,11 @@ import {
 } from '../utils/istTime.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import {
+  isOtherServicesExpertise,
+  isRamleelaExpertise,
+  requiresServiceDescription,
+} from '../utils/artistExpertise.js';
 
 const BANK_VERIFICATION_STATUS = {
   NOT_SUBMITTED: 'NOT_SUBMITTED',
@@ -192,12 +197,6 @@ const parseExperienceYears = (experience) => {
   if (!numbers?.length) return undefined;
   return parseInt(numbers[numbers.length - 1], 10);
 };
-
-const isRamleelaExpertise = (value) =>
-  String(value || '').trim().toLowerCase().includes('ramleela');
-
-const isOtherServicesExpertise = (value) =>
-  String(value || '').trim().toLowerCase() === 'other services';
 
 const normalizeAvailabilitySchedules = (payloadSchedules = []) => {
   if (!Array.isArray(payloadSchedules)) {
@@ -403,6 +402,7 @@ export const updateArtistProfile = asyncHandler(async (req, res) => {
     expertise,
     ramleelaCharacter,
     otherServiceType,
+    serviceDescription,
     experience,
     experienceYears,
     basePrice,
@@ -442,6 +442,7 @@ export const updateArtistProfile = asyncHandler(async (req, res) => {
   const isExpertiseBeingUpdated = role !== 'ARTIST' && expertise !== undefined;
   const needsRamleelaCharacter = isRamleelaExpertise(effectiveExpertise);
   const needsOtherServiceType = isOtherServicesExpertise(effectiveExpertise);
+  const needsServiceDescription = requiresServiceDescription(effectiveExpertise);
 
   if (needsRamleelaCharacter) {
     const nextCharacter = String(ramleelaCharacter || '').trim();
@@ -463,6 +464,17 @@ export const updateArtistProfile = asyncHandler(async (req, res) => {
     }
   } else if (isExpertiseBeingUpdated || otherServiceType !== undefined) {
     updates.$unset.otherServiceType = '';
+  }
+
+  if (needsServiceDescription) {
+    const nextDescription = String(serviceDescription || '').trim();
+    if (nextDescription) {
+      updates.$set.serviceDescription = nextDescription;
+    } else if (isExpertiseBeingUpdated || serviceDescription !== undefined) {
+      throw new ApiError(400, 'Service role description is required for this expertise');
+    }
+  } else if (isExpertiseBeingUpdated || serviceDescription !== undefined) {
+    updates.$unset.serviceDescription = '';
   }
 
   if (serviceLocationDetails && typeof serviceLocationDetails === 'object') {

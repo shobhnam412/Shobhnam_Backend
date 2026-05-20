@@ -778,6 +778,7 @@ export const createArtist = asyncHandler(async (req, res) => {
     experienceYears,
     ramleelaCharacter,
     otherServiceType,
+    serviceDescription,
     minimumPrice,
     maximumPrice,
     basePrice,
@@ -808,6 +809,15 @@ export const createArtist = asyncHandler(async (req, res) => {
   if (requireOtherServiceType && (!otherServiceType || !String(otherServiceType).trim())) {
     throw new ApiError(400, 'Other service type is required when expertise is Other services');
   }
+  const requireServiceDescription = [
+    'Sunderkand',
+    'Bhajan sandhya',
+    'Bhagwat khatha',
+    'Rudrabhishek',
+  ].includes(String(expertise || '').trim());
+  if (requireServiceDescription && (!serviceDescription || !String(serviceDescription).trim())) {
+    throw new ApiError(400, 'Service role description is required for this expertise');
+  }
 
   const minCandidate = minimumPrice !== undefined ? minimumPrice : basePrice;
   const maxCandidate = maximumPrice !== undefined ? maximumPrice : minimumPrice;
@@ -830,6 +840,7 @@ export const createArtist = asyncHandler(async (req, res) => {
     category,
     ramleelaCharacter: ramleelaCharacter?.trim() || undefined,
     otherServiceType: otherServiceType?.trim() || undefined,
+    serviceDescription: serviceDescription?.trim() || undefined,
     experienceYears: expYears ?? 0,
     minimumPrice: min,
     maximumPrice: max,
@@ -1106,7 +1117,7 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
 
   const artists = await Artist.find({ status: 'APPROVED' })
     .select(
-      'name phone email category location availability serviceAddresses profilePhoto activationChargeStatus bankVerification.status'
+      'name phone email category expertise location availability serviceAddresses profilePhoto ramleelaCharacter serviceDescription otherServiceType activationChargeStatus bankVerification.status'
     )
     .lean();
 
@@ -1135,6 +1146,10 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
         phone: artist.phone,
         email: artist.email,
         category: artist.category,
+        expertise: artist.expertise,
+        ramleelaCharacter: artist.ramleelaCharacter,
+        serviceDescription: artist.serviceDescription,
+        otherServiceType: artist.otherServiceType,
         location: artist.location,
         serviceAddresses: artist.serviceAddresses || [],
         profilePhoto: artist.profilePhoto,

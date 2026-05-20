@@ -254,6 +254,7 @@ export const registerArtistOnboarding = asyncHandler(async (req, res) => {
     aadharCard,
     ramleelaCharacter,
     otherServiceType,
+    serviceDescription,
   } = req.body;
 
   if (!onboardingToken) throw new ApiError(400, 'Onboarding token is required');
@@ -282,6 +283,15 @@ export const registerArtistOnboarding = asyncHandler(async (req, res) => {
   if (requireOtherServiceType && !String(otherServiceType || '').trim()) {
     throw new ApiError(400, 'Other service type is required when expertise is Other services');
   }
+  const requireServiceDescription = [
+    'Sunderkand',
+    'Bhajan sandhya',
+    'Bhagwat khatha',
+    'Rudrabhishek',
+  ].includes(String(expertise || '').trim());
+  if (requireServiceDescription && !String(serviceDescription || '').trim()) {
+    throw new ApiError(400, 'Service role description is required for this expertise');
+  }
 
   const min = Number(minimumPrice);
   const max = Number(maximumPrice);
@@ -309,6 +319,7 @@ export const registerArtistOnboarding = asyncHandler(async (req, res) => {
     category,
     ramleelaCharacter: ramleelaCharacter?.trim() || undefined,
     otherServiceType: otherServiceType?.trim() || undefined,
+    serviceDescription: serviceDescription?.trim() || undefined,
     experienceYears: expYears ?? 0,
     minimumPrice: min,
     maximumPrice: max,
