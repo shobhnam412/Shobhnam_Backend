@@ -49,11 +49,14 @@ const bookingPaymentVerificationSchema = new mongoose.Schema(
       type: String,
       default: 'INR',
     },
-    utrNumber: {
+    transactionId: {
       type: String,
-      required: true,
       trim: true,
       index: true,
+    },
+    utrNumber: {
+      type: String,
+      trim: true,
     },
     screenshotUrl: {
       type: String,
@@ -90,6 +93,36 @@ const bookingPaymentVerificationSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+const normalizeTransactionId = (doc) => {
+  if (!doc.transactionId?.trim() && doc.utrNumber?.trim()) {
+    doc.transactionId = doc.utrNumber.trim();
+  }
+};
+
+bookingPaymentVerificationSchema.pre('validate', function normalizeLegacyTransactionId(next) {
+  normalizeTransactionId(this);
+  if (!this.transactionId?.trim()) {
+    return next(new Error('Transaction ID is required'));
+  }
+  next();
+});
+
+bookingPaymentVerificationSchema.set('toJSON', {
+  transform(_doc, ret) {
+    ret.transactionId = ret.transactionId || ret.utrNumber || '';
+    delete ret.utrNumber;
+    return ret;
+  },
+});
+
+bookingPaymentVerificationSchema.set('toObject', {
+  transform(_doc, ret) {
+    ret.transactionId = ret.transactionId || ret.utrNumber || '';
+    delete ret.utrNumber;
+    return ret;
+  },
+});
 
 bookingPaymentVerificationSchema.index({ user: 1, booking: 1, status: 1 });
 bookingPaymentVerificationSchema.index({ user: 1, order: 1, status: 1 });

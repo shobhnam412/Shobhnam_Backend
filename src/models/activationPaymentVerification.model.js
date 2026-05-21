@@ -41,11 +41,14 @@ const activationPaymentVerificationSchema = new mongoose.Schema(
       type: String,
       default: 'INR',
     },
-    utrNumber: {
+    transactionId: {
       type: String,
-      required: true,
       trim: true,
       index: true,
+    },
+    utrNumber: {
+      type: String,
+      trim: true,
     },
     screenshotUrl: {
       type: String,
@@ -82,6 +85,36 @@ const activationPaymentVerificationSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+const normalizeTransactionId = (doc) => {
+  if (!doc.transactionId?.trim() && doc.utrNumber?.trim()) {
+    doc.transactionId = doc.utrNumber.trim();
+  }
+};
+
+activationPaymentVerificationSchema.pre('validate', function normalizeLegacyTransactionId(next) {
+  normalizeTransactionId(this);
+  if (!this.transactionId?.trim()) {
+    return next(new Error('Transaction ID is required'));
+  }
+  next();
+});
+
+activationPaymentVerificationSchema.set('toJSON', {
+  transform(_doc, ret) {
+    ret.transactionId = ret.transactionId || ret.utrNumber || '';
+    delete ret.utrNumber;
+    return ret;
+  },
+});
+
+activationPaymentVerificationSchema.set('toObject', {
+  transform(_doc, ret) {
+    ret.transactionId = ret.transactionId || ret.utrNumber || '';
+    delete ret.utrNumber;
+    return ret;
+  },
+});
 
 activationPaymentVerificationSchema.index({ activationFor: 1, user: 1, status: 1 });
 activationPaymentVerificationSchema.index({ activationFor: 1, artist: 1, status: 1 });

@@ -89,11 +89,17 @@ export const razorpayWebhook = asyncHandler(async (req, res) => {
   res.status(410).send('Razorpay webhook disabled');
 });
 
+const resolveTransactionId = (body) => {
+  const value = body.transactionId ?? body.utrNumber;
+  return value ? String(value).trim() : '';
+};
+
 export const submitBookingPaymentVerification = asyncHandler(async (req, res) => {
-  const { bookingId, orderId, paymentPlan, utrNumber, amount } = req.body;
+  const { bookingId, orderId, paymentPlan, amount } = req.body;
+  const transactionId = resolveTransactionId(req.body);
   const screenshotUrl = req.file?.location;
 
-  if (!utrNumber || !String(utrNumber).trim()) throw new ApiError(400, 'UTR number is required');
+  if (!transactionId) throw new ApiError(400, 'Transaction ID is required');
   if (!amount || Number(amount) <= 0) throw new ApiError(400, 'Amount is required');
   if (!screenshotUrl) throw new ApiError(400, 'Payment screenshot is required');
   if ((!bookingId && !orderId) || (bookingId && orderId)) {
@@ -136,7 +142,7 @@ export const submitBookingPaymentVerification = asyncHandler(async (req, res) =>
     amount: submittedAmount,
     expectedAmount: payable.expectedAmount,
     currency: payable.currency,
-    utrNumber: String(utrNumber).trim(),
+    transactionId,
     screenshotUrl,
     status: 'PENDING',
     submittedAt: new Date(),
@@ -177,10 +183,11 @@ export const getMyBookingPaymentVerificationStatus = asyncHandler(async (req, re
 });
 
 export const submitActivationPaymentVerification = asyncHandler(async (req, res) => {
-  const { activationFor = 'USER', utrNumber, amount } = req.body;
+  const { activationFor = 'USER', amount } = req.body;
+  const transactionId = resolveTransactionId(req.body);
   const screenshotUrl = req.file?.location;
 
-  if (!utrNumber || !String(utrNumber).trim()) throw new ApiError(400, 'UTR number is required');
+  if (!transactionId) throw new ApiError(400, 'Transaction ID is required');
   if (!amount || Number(amount) <= 0) throw new ApiError(400, 'Amount is required');
   if (!screenshotUrl) throw new ApiError(400, 'Payment screenshot is required');
 
@@ -221,7 +228,7 @@ export const submitActivationPaymentVerification = asyncHandler(async (req, res)
     activationFor: normalizedFor,
     amount: submittedAmount,
     currency: 'INR',
-    utrNumber: String(utrNumber).trim(),
+    transactionId,
     screenshotUrl,
     status: 'PENDING',
     submittedAt: new Date(),
