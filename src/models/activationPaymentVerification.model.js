@@ -92,12 +92,11 @@ const normalizeTransactionId = (doc) => {
   }
 };
 
-activationPaymentVerificationSchema.pre('validate', function normalizeLegacyTransactionId(next) {
+activationPaymentVerificationSchema.pre('validate', function normalizeLegacyTransactionId() {
   normalizeTransactionId(this);
   if (!this.transactionId?.trim()) {
-    return next(new Error('Transaction ID is required'));
+    throw new Error('Transaction ID is required');
   }
-  next();
 });
 
 activationPaymentVerificationSchema.set('toJSON', {

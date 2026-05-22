@@ -100,12 +100,11 @@ const normalizeTransactionId = (doc) => {
   }
 };
 
-bookingPaymentVerificationSchema.pre('validate', function normalizeLegacyTransactionId(next) {
+bookingPaymentVerificationSchema.pre('validate', function normalizeLegacyTransactionId() {
   normalizeTransactionId(this);
   if (!this.transactionId?.trim()) {
-    return next(new Error('Transaction ID is required'));
+    throw new Error('Transaction ID is required');
   }
-  next();
 });
 
 bookingPaymentVerificationSchema.set('toJSON', {
