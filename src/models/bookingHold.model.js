@@ -1,5 +1,10 @@
 import mongoose from 'mongoose';
-import { ALL_BOOKING_SLOT_ENUM } from '../utils/istTime.js';
+import {
+  ALL_BOOKING_SLOT_ENUM,
+  BOOKING_SLOT_ENUM,
+  getSlotsSpanUtc,
+  normalizeSlotsInput,
+} from '../utils/istTime.js';
 
 const bookingHoldSchema = new mongoose.Schema(
   {
@@ -27,6 +32,10 @@ const bookingHoldSchema = new mongoose.Schema(
       enum: ALL_BOOKING_SLOT_ENUM,
       required: true,
     },
+    slots: {
+      type: [{ type: String, enum: BOOKING_SLOT_ENUM }],
+      default: undefined,
+    },
     state: {
       type: String,
       enum: ['ACTIVE', 'CONSUMED', 'RELEASED'],
@@ -39,5 +48,24 @@ const bookingHoldSchema = new mongoose.Schema(
 );
 
 bookingHoldSchema.index({ artist: 1, state: 1, expiresAt: 1 });
+
+bookingHoldSchema.pre('validate', function bookingHoldSlotsPreValidate() {
+  const normalized = normalizeSlotsInput({
+    slot: this.slot,
+    slots: this.slots,
+  });
+  if (!normalized.length) return;
+
+  this.slots = normalized;
+  this.slot = normalized[0];
+
+  const refDate = this.startUtc || new Date();
+  const { startUtc, endUtc, dateKey } = getSlotsSpanUtc(refDate, normalized);
+  if (startUtc && endUtc) {
+    this.startUtc = startUtc;
+    this.endUtc = endUtc;
+    if (dateKey) this.dateKey = dateKey;
+  }
+});
 
 export const BookingHold = mongoose.model('BookingHold', bookingHoldSchema);

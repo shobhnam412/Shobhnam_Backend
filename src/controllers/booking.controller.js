@@ -16,11 +16,11 @@ import {
   consumeHoldIfPresent,
   createActiveHold,
   findConflictingBooking,
-  getArtistAvailabilityConflictMessage,
+  getArtistAvailabilityConflictMessageForSlots,
   releaseHoldById,
 } from '../services/inventory.service.js';
 import { createInAppNotification, NOTIFICATION_TYPE } from '../services/notification.service.js';
-import { getSlotIntervalUtc, toDateKeyInIST } from '../utils/istTime.js';
+import { getSlotIntervalUtc, normalizeSlotsInput } from '../utils/istTime.js';
 import { ApiError } from '../utils/ApiError.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -64,23 +64,31 @@ const syncOrderItemStatusFromLinkedBooking = async ({ bookingId, status, timesta
 };
 
 export const createBookingHold = asyncHandler(async (req, res) => {
-  const { artistId, date, slot, addressId } = req.body;
+  const { artistId, date, slot, slots, addressId } = req.body;
   if (!artistId) throw new ApiError(400, 'artistId is required');
   if (!date) throw new ApiError(400, 'date is required');
-  if (!slot) throw new ApiError(400, 'slot is required');
+  const normalized = normalizeSlotsInput({ slot, slots });
+  if (!normalized.length) {
+    throw new ApiError(400, 'At least one time slot is required');
+  }
 
   const hold = await createActiveHold({
     userId: req.user._id,
     artistId,
     dateInput: date,
-    slot,
+    slots: normalized,
     addressId,
   });
 
   res.status(201).json(
     new ApiResponse(
       201,
-      { holdId: hold._id, expiresAt: hold.expiresAt, slot: hold.slot },
+      {
+        holdId: hold._id,
+        expiresAt: hold.expiresAt,
+        slot: hold.slot,
+        slots: hold.slots || normalized,
+      },
       'Slot reserved temporarily'
     )
   );
@@ -121,6 +129,7 @@ export const createBooking = asyncHandler(async (req, res) => {
     holdId,
     date,
     slot,
+    slots,
     type,
     expectedAudienceSize,
     specialRequirements,
@@ -143,20 +152,23 @@ export const createBooking = asyncHandler(async (req, res) => {
 
   if (!artistId) throw new ApiError(400, 'artistId is required');
   if (!date) throw new ApiError(400, 'date is required');
-  if (!slot) throw new ApiError(400, 'slot is required');
+  const normalizedSlots = normalizeSlotsInput({ slot, slots });
+  if (!normalizedSlots.length) {
+    throw new ApiError(400, 'At least one time slot is required');
+  }
   if (!type) throw new ApiError(400, 'type is required');
   if (!address || !city) throw new ApiError(400, 'address and city are required');
 
   const artist = await Artist.findById(artistId);
   if (!artist) throw new ApiError(404, 'Artist not found');
   if (artist.status !== 'APPROVED') throw new ApiError(400, 'Artist is not available for booking');
-  const availabilityConflict = getArtistAvailabilityConflictMessage(artist, date, slot);
+  const availabilityConflict = getArtistAvailabilityConflictMessageForSlots(artist, date, normalizedSlots);
   if (availabilityConflict) throw new ApiError(409, availabilityConflict);
 
   await assertInventoryAvailable({
     artistId,
     dateInput: date,
-    slot,
+    slots: normalizedSlots,
     userId: req.user._id,
     excludeBookingId: null,
     ignoreHoldsForUserId: req.user._id,
@@ -167,20 +179,22 @@ export const createBooking = asyncHandler(async (req, res) => {
     userId: req.user._id,
     artistId,
     dateInput: date,
-    slot,
+    slots: normalizedSlots,
   });
 
-  const { startUtc, endUtc, dateKey } = getSlotIntervalUtc(date, slot);
-  const raceConflict = await findConflictingBooking({
-    artistId,
-    startUtc,
-    endUtc,
-    slot,
-    dateKey,
-    excludeBookingId: null,
-  });
-  if (raceConflict) {
-    throw new ApiError(409, 'Artist already has another booking for this date and slot');
+  for (const s of normalizedSlots) {
+    const { startUtc, endUtc, dateKey } = getSlotIntervalUtc(date, s);
+    const raceConflict = await findConflictingBooking({
+      artistId,
+      startUtc,
+      endUtc,
+      slot: s,
+      dateKey,
+      excludeBookingId: null,
+    });
+    if (raceConflict) {
+      throw new ApiError(409, 'Artist already has another booking for this date and slot');
+    }
   }
 
   const user = await User.findById(req.user._id).select('activationChargeStatus');
@@ -197,7 +211,14 @@ export const createBooking = asyncHandler(async (req, res) => {
   const newBooking = await Booking.create({
     user: req.user._id,
     artist: artistId,
-    eventDetails: { date, slot, type, expectedAudienceSize, specialRequirements },
+    eventDetails: {
+      date,
+      slot: normalizedSlots[0],
+      slots: normalizedSlots,
+      type,
+      expectedAudienceSize,
+      specialRequirements,
+    },
     location: {
       addressId,
       address,

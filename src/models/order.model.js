@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { ALL_BOOKING_SLOT_ENUM } from '../utils/istTime.js';
+import { ALL_BOOKING_SLOT_ENUM, BOOKING_SLOT_ENUM, normalizeSlotsInput } from '../utils/istTime.js';
 
 const orderItemSchema = new mongoose.Schema(
   {
@@ -9,6 +9,10 @@ const orderItemSchema = new mongoose.Schema(
     dateTime: { type: String },
     date: { type: Date },
     slot: { type: String, enum: ALL_BOOKING_SLOT_ENUM },
+    slots: {
+      type: [{ type: String, enum: BOOKING_SLOT_ENUM }],
+      default: undefined,
+    },
     addressId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Address',
@@ -115,6 +119,16 @@ const orderItemSchema = new mongoose.Schema(
   },
   { _id: false }
 );
+
+orderItemSchema.pre('validate', function orderItemSlotsPreValidate() {
+  const normalized = normalizeSlotsInput({
+    slot: this.slot,
+    slots: this.slots,
+  });
+  if (!normalized.length) return;
+  this.slots = normalized;
+  this.slot = normalized[0];
+});
 
 const orderSchema = new mongoose.Schema(
   {

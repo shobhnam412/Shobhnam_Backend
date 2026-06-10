@@ -1,5 +1,10 @@
 import mongoose from 'mongoose';
-import { ALL_BOOKING_SLOT_ENUM, getSlotIntervalUtc } from '../utils/istTime.js';
+import {
+  ALL_BOOKING_SLOT_ENUM,
+  BOOKING_SLOT_ENUM,
+  getSlotsSpanUtc,
+  normalizeSlotsInput,
+} from '../utils/istTime.js';
 
 const bookingSchema = new mongoose.Schema(
   {
@@ -17,6 +22,10 @@ const bookingSchema = new mongoose.Schema(
     eventDetails: {
       date: { type: Date, required: true },
       slot: { type: String, enum: ALL_BOOKING_SLOT_ENUM, required: true },
+      slots: {
+        type: [{ type: String, enum: BOOKING_SLOT_ENUM }],
+        default: undefined,
+      },
       startUtc: { type: Date },
       endUtc: { type: Date },
       type: { type: String, required: true }, // array of strings maybe? e.g. 'Ramleela', 'Sundarkand'
@@ -206,14 +215,23 @@ const bookingSchema = new mongoose.Schema(
 
 // Mongoose 8+ may not pass `next` to sync hooks; use async middleware instead of next().
 bookingSchema.pre('validate', async function bookingIntervalPreValidate() {
-  if (!this.eventDetails?.date || !this.eventDetails?.slot) {
-    return;
-  }
+  const ed = this.eventDetails;
+  if (!ed?.date) return;
+
+  const normalized = normalizeSlotsInput({
+    slot: ed.slot,
+    slots: ed.slots,
+  });
+  if (!normalized.length) return;
+
+  ed.slots = normalized;
+  ed.slot = normalized[0];
+
   try {
-    const { startUtc, endUtc } = getSlotIntervalUtc(this.eventDetails.date, this.eventDetails.slot);
+    const { startUtc, endUtc } = getSlotsSpanUtc(ed.date, normalized);
     if (startUtc && endUtc) {
-      this.eventDetails.startUtc = startUtc;
-      this.eventDetails.endUtc = endUtc;
+      ed.startUtc = startUtc;
+      ed.endUtc = endUtc;
     }
   } catch (err) {
     throw err;

@@ -25,9 +25,16 @@ import { createInAppNotification, deactivatePaymentPendingNotifications, NOTIFIC
 import {
   findConflictingBooking,
   getArtistAvailabilityConflictMessage,
+  getArtistAvailabilityConflictMessageForSlots,
   buildArtistCalendarPayload,
 } from '../services/inventory.service.js';
-import { ALL_BOOKING_SLOT_ENUM, BOOKING_SLOT_ENUM, getSlotIntervalUtc } from '../utils/istTime.js';
+import {
+  ALL_BOOKING_SLOT_ENUM,
+  BOOKING_SLOT_ENUM,
+  bookingSlotsList,
+  getSlotIntervalUtc,
+  normalizeSlotsInput,
+} from '../utils/istTime.js';
 
 const BANK_VERIFICATION_STATUS = {
   NOT_SUBMITTED: 'NOT_SUBMITTED',
@@ -957,7 +964,17 @@ const buildOrderItemEventDate = (orderItem) => {
 };
 
 const buildOrderItemSlot = (orderItem) => {
-  return ALL_BOOKING_SLOT_ENUM.includes(orderItem?.slot) ? orderItem.slot : BOOKING_SLOT_ENUM[0];
+  const slots = buildOrderItemSlots(orderItem);
+  return slots[0] || BOOKING_SLOT_ENUM[0];
+};
+
+const buildOrderItemSlots = (orderItem) => {
+  const normalized = normalizeSlotsInput({
+    slot: orderItem?.slot,
+    slots: orderItem?.slots,
+  });
+  if (normalized.length) return normalized;
+  return ALL_BOOKING_SLOT_ENUM.includes(orderItem?.slot) ? [orderItem.slot] : [BOOKING_SLOT_ENUM[0]];
 };
 
 const buildOrderItemTypeLabel = (orderItem) => {
@@ -1036,6 +1053,20 @@ const findArtistBookingConflict = async ({ artistId, date, slot, excludeBookingI
   return findConflictingBooking({ artistId, startUtc, endUtc, slot, dateKey, excludeBookingId });
 };
 
+const findArtistBookingConflictForSlots = async ({ artistId, date, slots, excludeBookingId }) => {
+  const normalized = normalizeSlotsInput({ slots });
+  for (const slot of normalized) {
+    const conflict = await findArtistBookingConflict({
+      artistId,
+      date,
+      slot,
+      excludeBookingId,
+    });
+    if (conflict) return conflict;
+  }
+  return null;
+};
+
 export const getArtistCalendarForAdmin = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { from, to } = req.query;
@@ -1099,9 +1130,16 @@ const artistMatchesServiceHint = (artistCategory, serviceHint) => {
  * serviceType (optional — narrows to artists whose category matches the booked service label).
  */
 export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
-  const { date, slot, excludeBookingId, serviceType, serviceHint } = req.query;
-  if (!date || !slot) {
-    throw new ApiError(400, 'Query params date and slot are required');
+  const { date, slot, slots: slotsQuery, excludeBookingId, serviceType, serviceHint } = req.query;
+  const slotsFromQuery = slotsQuery
+    ? String(slotsQuery)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+  const normalizedSlots = normalizeSlotsInput({ slot, slots: slotsFromQuery });
+  if (!date || !normalizedSlots.length) {
+    throw new ApiError(400, 'Query params date and slot (or slots) are required');
   }
   const dateObj = new Date(String(date));
   if (Number.isNaN(dateObj.getTime())) {
@@ -1126,14 +1164,18 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
       if (!artistMatchesServiceHint(artist.category, serviceFilterRaw)) {
         return null;
       }
-      const availabilityMsg = getArtistAvailabilityConflictMessage(artist, dateObj, String(slot));
+      const availabilityMsg = getArtistAvailabilityConflictMessageForSlots(
+        artist,
+        dateObj,
+        normalizedSlots
+      );
       if (availabilityMsg) {
         return null;
       }
-      const conflict = await findArtistBookingConflict({
+      const conflict = await findArtistBookingConflictForSlots({
         artistId: artist._id,
         date: dateObj,
-        slot: String(slot),
+        slots: normalizedSlots,
         excludeBookingId: excludeId,
       });
       if (conflict) {
@@ -1166,7 +1208,8 @@ export const listArtistsAvailableForSlot = asyncHandler(async (req, res) => {
       {
         artists: available,
         date: dateObj.toISOString(),
-        slot: String(slot),
+        slot: normalizedSlots[0],
+        slots: normalizedSlots,
         serviceTypeFilter: serviceFilterRaw || null,
       },
       'Artists available for slot',
@@ -1199,6 +1242,7 @@ const syncLinkedBookingForOrderItem = async (order, itemIndex, assignedArtists) 
     eventDetails: {
       date: buildOrderItemEventDate(orderItem),
       slot: buildOrderItemSlot(orderItem),
+      slots: buildOrderItemSlots(orderItem),
       type: buildOrderItemTypeLabel(orderItem),
     },
     location: {
@@ -1364,15 +1408,16 @@ export const assignArtistToBooking = asyncHandler(async (req, res) => {
     );
   }
 
-  const availabilityConflict = getArtistAvailabilityConflictMessage(
+  const bookingSlots = bookingSlotsList(booking?.eventDetails);
+  const availabilityConflict = getArtistAvailabilityConflictMessageForSlots(
     artist,
     booking?.eventDetails?.date,
-    booking?.eventDetails?.slot
+    bookingSlots
   );
-  const bookingConflict = await findArtistBookingConflict({
+  const bookingConflict = await findArtistBookingConflictForSlots({
     artistId: artist._id,
     date: booking?.eventDetails?.date,
-    slot: booking?.eventDetails?.slot,
+    slots: bookingSlots,
     excludeBookingId: booking._id,
   });
   if (availabilityConflict || bookingConflict) {
@@ -1574,7 +1619,7 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
 
   const targetItem = order.items[parsedItemIndex];
   const targetDate = buildOrderItemEventDate(targetItem);
-  const targetSlot = buildOrderItemSlot(targetItem);
+  const targetSlots = buildOrderItemSlots(targetItem);
   const assignedArtists = getOrderItemAssignedArtists(targetItem);
   const noteValue = note ? String(note).trim() : undefined;
   let addedCount = 0;
@@ -1609,11 +1654,15 @@ export const assignArtistToOrderItem = asyncHandler(async (req, res) => {
     const alreadyAssigned = assignedArtists.some((entry) => isSameId(entry.artist, artist._id));
     if (alreadyAssigned) continue;
 
-    const availabilityConflict = getArtistAvailabilityConflictMessage(artist, targetDate, targetSlot);
-    const bookingConflict = await findArtistBookingConflict({
+    const availabilityConflict = getArtistAvailabilityConflictMessageForSlots(
+      artist,
+      targetDate,
+      targetSlots
+    );
+    const bookingConflict = await findArtistBookingConflictForSlots({
       artistId: artist._id,
       date: targetDate,
-      slot: targetSlot,
+      slots: targetSlots,
     });
     if (availabilityConflict || bookingConflict) {
       assignmentWarnings.push({

@@ -4,13 +4,18 @@ import { BookingHold } from '../models/bookingHold.model.js';
 import {
   ALL_BOOKING_SLOT_ENUM,
   BOOKING_SLOT_ENUM,
+  bookingSlotsList,
   getSlotIntervalUtc,
+  getSlotsSpanUtc,
+  holdSlotsList,
   intervalsOverlap,
   istHmIntervalToUtc,
   istIntervalToUtcExclusiveEnd,
   legacyAvailabilitySlotToInterval,
   mergeArtistDayIntervals,
   normalizeHmToken,
+  normalizeSlotsInput,
+  slotsEqual,
   toDateKeyInIST,
 } from '../utils/istTime.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -65,6 +70,37 @@ const buildIntervalOverlapClause = (startUtc, endUtc) => ({
   ],
 });
 
+const bookingOverlapsRequestedSlot = (booking, dateKey, requestedStartUtc, requestedEndUtc) => {
+  const ed = booking?.eventDetails;
+  if (!ed) return false;
+  const bookingDateKey = toDateKeyInIST(ed.date);
+  if (bookingDateKey !== dateKey) return false;
+
+  const slots = bookingSlotsList(ed);
+  const refDate = ed.date;
+  for (const s of slots) {
+    const { startUtc, endUtc } = getSlotIntervalUtc(refDate, s);
+    if (startUtc && endUtc && intervalsOverlap(requestedStartUtc, requestedEndUtc, startUtc, endUtc)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const holdOverlapsRequestedSlot = (hold, dateKey, requestedStartUtc, requestedEndUtc) => {
+  const holdDateKey = hold?.dateKey || toDateKeyInIST(hold?.startUtc);
+  if (holdDateKey !== dateKey) return false;
+
+  const refDate = hold.startUtc || `${dateKey}T12:00:00+05:30`;
+  for (const s of holdSlotsList(hold)) {
+    const { startUtc, endUtc } = getSlotIntervalUtc(refDate, s);
+    if (startUtc && endUtc && intervalsOverlap(requestedStartUtc, requestedEndUtc, startUtc, endUtc)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 export const findConflictingBooking = async ({ artistId, startUtc, endUtc, slot, dateKey, excludeBookingId }) => {
   const query = {
     status: { $in: ACTIVE_BOOKING_STATUSES },
@@ -78,19 +114,61 @@ export const findConflictingBooking = async ({ artistId, startUtc, endUtc, slot,
   if (excludeBookingId) {
     query._id = { $ne: excludeBookingId };
   }
-  return Booking.findOne(query).select('_id eventDetails status');
+  const directHit = await Booking.findOne(query).select('_id eventDetails status');
+  if (directHit) return directHit;
+
+  const sameDayQuery = {
+    status: { $in: ACTIVE_BOOKING_STATUSES },
+    $and: [
+      artistMatch(artistId),
+      {
+        $expr: {
+          $eq: [
+            {
+              $dateToString: {
+                format: '%Y-%m-%d',
+                date: '$eventDetails.date',
+                timezone: 'Asia/Kolkata',
+              },
+            },
+            dateKey,
+          ],
+        },
+      },
+    ],
+  };
+  if (excludeBookingId) {
+    sameDayQuery._id = { $ne: excludeBookingId };
+  }
+
+  const sameDayBookings = await Booking.find(sameDayQuery).select('_id eventDetails status').lean();
+  for (const booking of sameDayBookings) {
+    if (bookingOverlapsRequestedSlot(booking, dateKey, startUtc, endUtc)) {
+      return booking;
+    }
+  }
+  return null;
 };
 
-export const findConflictingHold = async ({ artistId, startUtc, endUtc, userId }) => {
+export const findConflictingHold = async ({ artistId, startUtc, endUtc, slot, dateKey, userId }) => {
   const now = new Date();
-  return BookingHold.findOne({
+  const holds = await BookingHold.find({
     artist: artistId,
     state: 'ACTIVE',
     expiresAt: { $gt: now },
     user: { $ne: userId },
-    startUtc: { $lt: endUtc },
-    endUtc: { $gt: startUtc },
-  }).select('_id user expiresAt');
+  })
+    .select('_id user expiresAt startUtc endUtc slot slots dateKey')
+    .lean();
+
+  for (const hold of holds) {
+    const key = hold.dateKey || toDateKeyInIST(hold.startUtc);
+    if (key !== dateKey) continue;
+    if (holdOverlapsRequestedSlot(hold, dateKey, startUtc, endUtc)) {
+      return hold;
+    }
+  }
+  return null;
 };
 
 /**
@@ -175,76 +253,119 @@ export const getArtistAvailabilityConflictMessage = (artist, dateInput, slot) =>
   return '';
 };
 
+export const getArtistAvailabilityConflictMessageForSlots = (artist, dateInput, slots) => {
+  const normalized = normalizeSlotsInput({ slots });
+  if (!normalized.length) {
+    return 'At least one time slot is required';
+  }
+  for (const slot of normalized) {
+    const msg = getArtistAvailabilityConflictMessage(artist, dateInput, slot);
+    if (msg) return msg;
+  }
+  return '';
+};
+
 export const assertInventoryAvailable = async ({
   artistId,
   dateInput,
   slot,
+  slots: slotsInput,
   userId,
   excludeBookingId,
   ignoreHoldsForUserId,
 }) => {
-  const { startUtc, endUtc, dateKey } = getSlotIntervalUtc(dateInput, slot);
-  if (!startUtc || !endUtc || !dateKey) {
-    throw new ApiError(400, 'Invalid date or slot for availability check');
-  }
-
-  const bookingHit = await findConflictingBooking({
-    artistId,
-    startUtc,
-    endUtc,
-    slot,
-    dateKey,
-    excludeBookingId,
-  });
-  if (bookingHit) {
-    throw new ApiError(409, 'Artist already has another booking for this date and slot');
+  const normalized = normalizeSlotsInput({ slot, slots: slotsInput });
+  if (!normalized.length) {
+    throw new ApiError(400, 'At least one time slot is required');
   }
 
   const holdUserId = ignoreHoldsForUserId ?? userId;
-  const holdHit = await findConflictingHold({
-    artistId,
-    startUtc,
-    endUtc,
-    userId: holdUserId,
-  });
-  if (holdHit) {
-    throw new ApiError(409, 'This time was just reserved by another user. Pick another slot.');
+  let spanStart = null;
+  let spanEnd = null;
+  let dateKey = null;
+
+  for (const s of normalized) {
+    const { startUtc, endUtc, dateKey: dk } = getSlotIntervalUtc(dateInput, s);
+    if (!startUtc || !endUtc || !dk) {
+      throw new ApiError(400, 'Invalid date or slot for availability check');
+    }
+    dateKey = dk;
+
+    const bookingHit = await findConflictingBooking({
+      artistId,
+      startUtc,
+      endUtc,
+      slot: s,
+      dateKey: dk,
+      excludeBookingId,
+    });
+    if (bookingHit) {
+      throw new ApiError(409, 'Artist already has another booking for this date and slot');
+    }
+
+    const holdHit = await findConflictingHold({
+      artistId,
+      startUtc,
+      endUtc,
+      slot: s,
+      dateKey: dk,
+      userId: holdUserId,
+    });
+    if (holdHit) {
+      throw new ApiError(409, 'This time was just reserved by another user. Pick another slot.');
+    }
+
+    if (!spanStart || startUtc < spanStart) spanStart = startUtc;
+    if (!spanEnd || endUtc > spanEnd) spanEnd = endUtc;
   }
 
-  return { startUtc, endUtc, dateKey };
+  return { startUtc: spanStart, endUtc: spanEnd, dateKey, slots: normalized };
 };
 
-export const createActiveHold = async ({ userId, artistId, dateInput, slot, addressId }) => {
+export const createActiveHold = async ({ userId, artistId, dateInput, slot, slots: slotsInput, addressId }) => {
+  const normalized = normalizeSlotsInput({ slot, slots: slotsInput });
+  if (!normalized.length) {
+    throw new ApiError(400, 'At least one time slot is required');
+  }
+
   const artist = await Artist.findById(artistId);
   if (!artist) throw new ApiError(404, 'Artist not found');
   if (artist.status !== 'APPROVED') {
     throw new ApiError(400, 'Artist is not available for booking');
   }
 
-  const msg = getArtistAvailabilityConflictMessage(artist, dateInput, slot);
+  const msg = getArtistAvailabilityConflictMessageForSlots(artist, dateInput, normalized);
   if (msg) throw new ApiError(409, msg);
 
-  const { startUtc, endUtc, dateKey } = getSlotIntervalUtc(dateInput, slot);
+  const { startUtc, endUtc, dateKey } = getSlotsSpanUtc(dateInput, normalized);
   if (!startUtc || !endUtc) throw new ApiError(400, 'Invalid date or slot');
   if (startUtc.getTime() < Date.now()) {
     throw new ApiError(400, 'Past date or slot cannot be booked. Please choose an upcoming slot.');
   }
 
-  await BookingHold.updateMany(
-    {
-      user: userId,
-      artist: artistId,
-      state: 'ACTIVE',
-      startUtc: { $lt: endUtc },
-      endUtc: { $gt: startUtc },
-    },
-    { $set: { state: 'RELEASED' } }
-  );
+  const activeHolds = await BookingHold.find({
+    user: userId,
+    artist: artistId,
+    state: 'ACTIVE',
+    expiresAt: { $gt: new Date() },
+  }).select('startUtc endUtc slot slots dateKey');
+
+  for (const existing of activeHolds) {
+    const key = existing.dateKey || toDateKeyInIST(existing.startUtc);
+    for (const s of normalized) {
+      const { startUtc: sStart, endUtc: sEnd } = getSlotIntervalUtc(dateInput, s);
+      if (holdOverlapsRequestedSlot(existing, key, sStart, sEnd)) {
+        existing.state = 'RELEASED';
+        await existing.save();
+        break;
+      }
+    }
+  }
 
   await assertInventoryAvailable({
     artistId,
     dateInput,
-    slot,
+    slots: normalized,
     userId,
     excludeBookingId: null,
     ignoreHoldsForUserId: null,
@@ -258,7 +379,8 @@ export const createActiveHold = async ({ userId, artistId, dateInput, slot, addr
     startUtc,
     endUtc,
     dateKey,
-    slot,
+    slot: normalized[0],
+    slots: normalized,
     state: 'ACTIVE',
     expiresAt,
   });
@@ -274,9 +396,14 @@ export const releaseHoldById = async (holdId, userId) => {
   return hold;
 };
 
-export const consumeHoldIfPresent = async ({ holdId, userId, artistId, dateInput, slot }) => {
+export const consumeHoldIfPresent = async ({ holdId, userId, artistId, dateInput, slot, slots: slotsInput }) => {
   if (!holdId) {
     throw new ApiError(400, 'holdId is required to complete booking');
+  }
+
+  const normalized = normalizeSlotsInput({ slot, slots: slotsInput });
+  if (!normalized.length) {
+    throw new ApiError(400, 'At least one time slot is required');
   }
 
   const now = new Date();
@@ -292,14 +419,15 @@ export const consumeHoldIfPresent = async ({ holdId, userId, artistId, dateInput
     throw new ApiError(409, 'Your slot reservation expired. Go back and select the time again.');
   }
 
-  const { startUtc, endUtc } = getSlotIntervalUtc(dateInput, slot);
-  if (
-    !startUtc ||
-    !endUtc ||
-    hold.slot !== slot ||
-    !intervalsOverlap(hold.startUtc, hold.endUtc, startUtc, endUtc)
-  ) {
-    throw new ApiError(400, 'holdId does not match the selected date and slot');
+  const holdSlots = holdSlotsList(hold);
+  if (!slotsEqual(holdSlots, normalized)) {
+    throw new ApiError(400, 'holdId does not match the selected date and slots');
+  }
+
+  const holdDateKey = hold.dateKey || toDateKeyInIST(dateInput);
+  const requestDateKey = toDateKeyInIST(dateInput);
+  if (holdDateKey !== requestDateKey) {
+    throw new ApiError(400, 'holdId does not match the selected date and slots');
   }
 
   hold.state = 'CONSUMED';
@@ -354,7 +482,7 @@ export const buildArtistCalendarPayload = async ({ artistId, from, to }) => {
       startUtc: { $lt: rangePadEnd },
       endUtc: { $gt: rangePadStart },
     })
-      .select('startUtc endUtc slot expiresAt')
+      .select('startUtc endUtc slot slots dateKey expiresAt')
       .lean(),
   ]);
 
@@ -375,18 +503,12 @@ export const buildArtistCalendarPayload = async ({ artistId, from, to }) => {
 
       const bookingHit = bookings.some((b) => {
         if (toDateKeyInIST(b.eventDetails?.date) !== key) return false;
-        let bStart = b.eventDetails?.startUtc ? new Date(b.eventDetails.startUtc) : null;
-        let bEnd = b.eventDetails?.endUtc ? new Date(b.eventDetails.endUtc) : null;
-        if (!bStart || !bEnd) {
-          const iv = getSlotIntervalUtc(b.eventDetails.date, b.eventDetails.slot);
-          bStart = iv.startUtc;
-          bEnd = iv.endUtc;
-        }
-        return bStart && bEnd && startUtc && endUtc && intervalsOverlap(startUtc, endUtc, bStart, bEnd);
+        return bookingOverlapsRequestedSlot(b, key, startUtc, endUtc);
       });
       const holdHit = holds.some((h) => {
-        if (toDateKeyInIST(h.startUtc) !== key) return false;
-        return startUtc && endUtc && intervalsOverlap(startUtc, endUtc, h.startUtc, h.endUtc);
+        const holdKey = h.dateKey || toDateKeyInIST(h.startUtc);
+        if (holdKey !== key) return false;
+        return holdOverlapsRequestedSlot(h, key, startUtc, endUtc);
       });
 
       const blockedByArtist = slotOverlapsBlockedIntervals(startUtc, endUtc, blockedUtcIntervals);

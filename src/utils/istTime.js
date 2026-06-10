@@ -115,6 +115,71 @@ export const intervalsOverlap = (aStart, aEnd, bStart, bEnd) => {
   return as < be && bs < ae;
 };
 
+/**
+ * Normalize slot input to ordered unique 3h slots (BOOKING_SLOT_ENUM order).
+ * @param {{ slot?: string, slots?: string[] }} input
+ * @returns {string[]}
+ */
+export const normalizeSlotsInput = ({ slot, slots } = {}) => {
+  const raw =
+    Array.isArray(slots) && slots.length
+      ? slots
+      : slot
+        ? [slot]
+        : [];
+  const allowed = new Set(BOOKING_SLOT_ENUM);
+  const unique = [...new Set(raw.map((s) => String(s).trim()).filter((s) => allowed.has(s)))];
+  return BOOKING_SLOT_ENUM.filter((s) => unique.includes(s));
+};
+
+/** @param {string[]} a @param {string[]} b */
+export const slotsEqual = (a, b) => {
+  const na = normalizeSlotsInput({ slots: a });
+  const nb = normalizeSlotsInput({ slots: b });
+  return na.length === nb.length && na.every((s, i) => s === nb[i]);
+};
+
+/**
+ * UTC bounds from first slot start through last slot end (display/TTL only).
+ * @param {string|Date} dateInput
+ * @param {string[]} slots
+ */
+export const getSlotsSpanUtc = (dateInput, slots) => {
+  const normalized = normalizeSlotsInput({ slots });
+  if (!normalized.length) {
+    return { startUtc: null, endUtc: null, dateKey: null };
+  }
+  const first = getSlotIntervalUtc(dateInput, normalized[0]);
+  const last = getSlotIntervalUtc(dateInput, normalized[normalized.length - 1]);
+  return {
+    startUtc: first.startUtc,
+    endUtc: last.endUtc,
+    dateKey: first.dateKey,
+  };
+};
+
+/** Slots from booking eventDetails (multi or legacy single). */
+export const bookingSlotsList = (eventDetails) => {
+  if (Array.isArray(eventDetails?.slots) && eventDetails.slots.length) {
+    return normalizeSlotsInput({ slots: eventDetails.slots });
+  }
+  if (eventDetails?.slot) {
+    return normalizeSlotsInput({ slot: eventDetails.slot });
+  }
+  return [];
+};
+
+/** Slots from a hold document. */
+export const holdSlotsList = (hold) => {
+  if (Array.isArray(hold?.slots) && hold.slots.length) {
+    return normalizeSlotsInput({ slots: hold.slots });
+  }
+  if (hold?.slot) {
+    return normalizeSlotsInput({ slot: hold.slot });
+  }
+  return [];
+};
+
 const HH_MM = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 /**

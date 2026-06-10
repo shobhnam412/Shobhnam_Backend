@@ -10,7 +10,7 @@ import {
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { ALL_BOOKING_SLOT_ENUM } from "../utils/istTime.js";
+import { ALL_BOOKING_SLOT_ENUM, normalizeSlotsInput } from "../utils/istTime.js";
 import { createInAppNotification, NOTIFICATION_TYPE } from "../services/notification.service.js";
 
 const TRAVELING_FEE = 500;
@@ -132,8 +132,12 @@ export const createOrder = asyncHandler(async (req, res) => {
     if (!item.date || Number.isNaN(new Date(item.date).getTime())) {
       throw new ApiError(400, "Each order item must include a valid date");
     }
-    if (!ALLOWED_SLOTS.has(item.slot)) {
-      throw new ApiError(400, "Each order item must include a valid slot");
+    const itemSlots = normalizeSlotsInput({ slot: item.slot, slots: item.slots });
+    if (!itemSlots.length) {
+      throw new ApiError(400, "Each order item must include at least one valid time slot");
+    }
+    if (itemSlots.some((s) => !ALLOWED_SLOTS.has(s))) {
+      throw new ApiError(400, "Each order item must include valid time slots");
     }
 
     let addressLabel = String(item.addressLabel ?? "").trim();
@@ -181,7 +185,8 @@ export const createOrder = asyncHandler(async (req, res) => {
       price: item.price,
       dateTime: item.dateTime,
       date: new Date(item.date),
-      slot: item.slot,
+      slot: itemSlots[0],
+      slots: itemSlots,
       addressId: normalizedAddressId,
       addressDetail,
       addressLabel,
