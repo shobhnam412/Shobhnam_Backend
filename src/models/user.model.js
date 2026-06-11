@@ -32,6 +32,14 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    state: {
+      type: String,
+      trim: true,
+    },
+    pinCode: {
+      type: String,
+      trim: true,
+    },
     profilePhoto: {
       type: String, // S3 URL
     },

@@ -41,6 +41,8 @@ import {
   uploadAadharAdmin,
   uploadPanCardAdmin,
   uploadProfilePhotoAdmin,
+  updateArtist,
+  updateUser,
 } from '../controllers/admin.controller.js';
 import {
   createAdminBroadcastNotification,
@@ -69,6 +71,7 @@ router.get('/categories', getCategories);
 // Admin + Artist: shared upload endpoints (used by app and admin dashboard)
 router.use(verifyJWT);
 router.post('/upload-artist-profile-photo', authorizeRoles('ADMIN', 'ARTIST'), ...uploadWithErrorHandling(uploadSingle('profilePhoto'), uploadProfilePhotoAdmin));
+router.post('/upload-user-profile-photo', authorizeRoles('ADMIN'), ...uploadWithErrorHandling(uploadSingle('profilePhoto'), uploadProfilePhotoAdmin));
 router.post('/upload-artist-aadhar', authorizeRoles('ADMIN', 'ARTIST'), ...uploadWithErrorHandling(uploadSingle('aadharCard'), uploadAadharAdmin));
 router.post('/upload-artist-pan-card', authorizeRoles('ADMIN', 'ARTIST'), ...uploadWithErrorHandling(uploadSingle('panCard'), uploadPanCardAdmin));
 
@@ -80,6 +83,7 @@ router.get('/dashboard', getDashboardStats);
 router.get('/dashboard/stats', getDashboardStats);
 
 router.get('/users', getAllUsers);
+router.put('/users/:id', updateUser);
 router.delete('/users/:id', banUser);
 
 router.get('/artists/applications', getArtistApplications);
@@ -106,6 +110,7 @@ router.patch('/cancellations/:id/reject', rejectCancellationRequest);
 router.patch('/cancellations/:id/refund-done', markCancellationRefundDone);
 router.patch('/cancellations/:id/close', closeCancellationRequest);
 router.post('/artists', createArtist);
+router.put('/artists/:id', updateArtist);
 router.patch('/artists/:id', approveRejectArtist);
 router.patch('/artists/:id/bank-verification', reviewArtistBankVerification);
 router.delete('/artists/:id/bank-verification', deleteArtistBankVerification);

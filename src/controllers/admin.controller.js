@@ -881,6 +881,154 @@ export const createArtist = asyncHandler(async (req, res) => {
   );
 });
 
+export const updateArtist = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const {
+    phone,
+    name,
+    fullName,
+    gender,
+    expertise,
+    experience,
+    experienceYears,
+    ramleelaCharacter,
+    otherServiceType,
+    serviceDescription,
+    minimumPrice,
+    maximumPrice,
+    basePrice,
+    serviceLocation,
+    youtubeLink,
+    profilePhoto,
+    aadharCard,
+  } = req.body;
+
+  const artist = await Artist.findById(id);
+  if (!artist) throw new ApiError(404, 'Artist not found');
+
+  const displayName = (name || fullName || '').trim();
+  if (!displayName) throw new ApiError(400, 'Full name is required');
+  if (!phone || String(phone).trim().length < 10) throw new ApiError(400, 'Valid phone number is required');
+  if (!gender) throw new ApiError(400, 'Gender is required');
+  if (!expertise) throw new ApiError(400, 'Expertise is required');
+  if (!serviceLocation || !String(serviceLocation).trim()) throw new ApiError(400, 'Service location is required');
+  if (!profilePhoto || !String(profilePhoto).trim()) throw new ApiError(400, 'Profile photo is required');
+  if (!aadharCard || !String(aadharCard).trim()) throw new ApiError(400, 'Aadhar card is required');
+
+  const normalizedPhone = normalizeIndianPhone(phone);
+  if (normalizedPhone !== artist.phone) {
+    const existing = await Artist.findOne({ phone: normalizedPhone });
+    if (existing) throw new ApiError(409, 'An artist with this phone number already exists');
+    artist.phone = normalizedPhone;
+  }
+
+  const requireCharacter = expertise.toLowerCase().includes('ramleela');
+  if (requireCharacter && (!ramleelaCharacter || !String(ramleelaCharacter).trim())) {
+    throw new ApiError(400, 'Ramleela character is required when expertise includes Ramleela');
+  }
+  const requireOtherServiceType = expertise.toLowerCase() === 'other services';
+  if (requireOtherServiceType && (!otherServiceType || !String(otherServiceType).trim())) {
+    throw new ApiError(400, 'Other service type is required when expertise is Other services');
+  }
+  const requireServiceDescription = [
+    'Sunderkand',
+    'Bhajan sandhya',
+    'Bhagwat khatha',
+    'Rudrabhishek',
+  ].includes(String(expertise || '').trim());
+  if (requireServiceDescription && (!serviceDescription || !String(serviceDescription).trim())) {
+    throw new ApiError(400, 'Service role description is required for this expertise');
+  }
+
+  const minCandidate = minimumPrice !== undefined ? minimumPrice : basePrice;
+  const maxCandidate = maximumPrice !== undefined ? maximumPrice : minimumPrice;
+  const min = Number(minCandidate);
+  const max = Number(maxCandidate);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) {
+    throw new ApiError(400, 'Minimum and maximum price are required and must be valid numbers');
+  }
+  if (min < 0) throw new ApiError(400, 'Minimum price must be greater than or equal to 0');
+  if (max < min) throw new ApiError(400, 'Maximum price must be greater than or equal to minimum price');
+
+  const expYears = experienceYears !== undefined ? experienceYears : parseExperienceYears(experience);
+  const category = expertiseToCategory[expertise] || 'Other';
+
+  artist.name = displayName;
+  artist.gender = gender;
+  artist.expertise = expertise;
+  artist.category = category;
+  artist.ramleelaCharacter = requireCharacter ? ramleelaCharacter?.trim() : undefined;
+  artist.otherServiceType = requireOtherServiceType ? otherServiceType?.trim() : undefined;
+  artist.serviceDescription = requireServiceDescription ? serviceDescription?.trim() : undefined;
+  artist.experienceYears = expYears ?? artist.experienceYears ?? 0;
+  artist.minimumPrice = min;
+  artist.maximumPrice = max;
+  artist.pricing = {
+    basePrice: min,
+    minimumPrice: min,
+    maximumPrice: max,
+    currency: 'INR',
+  };
+  artist.serviceLocation = String(serviceLocation).trim();
+  artist.youtubeLink = youtubeLink?.trim() || '';
+  artist.profilePhoto = String(profilePhoto).trim();
+  artist.aadharCard = String(aadharCard).trim();
+
+  artist.onboardingProgress = buildOnboardingProgress(artist);
+  artist.isLive = artist.status === 'APPROVED' && artist.onboardingProgress.allDone;
+
+  await artist.save();
+
+  res.status(200).json(
+    new ApiResponse(200, artist, 'Artist updated successfully')
+  );
+});
+
+export const updateUser = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { name, phone, email, city, state, pinCode, profilePhoto } = req.body;
+
+  const user = await User.findById(id);
+  if (!user) throw new ApiError(404, 'User not found');
+
+  if (!name || !name.trim()) {
+    throw new ApiError(400, 'Name is required');
+  }
+  if (!phone || String(phone).trim().length < 10) {
+    throw new ApiError(400, 'Valid phone number is required');
+  }
+
+  const normalizedPhone = normalizeIndianPhone(phone);
+  if (normalizedPhone !== user.phone) {
+    const existing = await User.findOne({ phone: normalizedPhone });
+    if (existing) throw new ApiError(409, 'A user with this phone number already exists');
+    user.phone = normalizedPhone;
+  }
+
+  if (email && email.trim()) {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail !== user.email) {
+      const existing = await User.findOne({ email: normalizedEmail });
+      if (existing) throw new ApiError(409, 'A user with this email already exists');
+      user.email = normalizedEmail;
+    }
+  } else {
+    user.email = undefined;
+  }
+
+  user.name = name.trim();
+  user.city = city?.trim() || undefined;
+  user.state = state?.trim() || undefined;
+  user.pinCode = pinCode?.trim() || undefined;
+  user.profilePhoto = profilePhoto?.trim() || undefined;
+
+  await user.save();
+
+  res.status(200).json(
+    new ApiResponse(200, user, 'User updated successfully')
+  );
+});
+
 const isSameId = (left, right) => String(left) === String(right);
 
 const getBookingAssignedArtists = (booking) => {
